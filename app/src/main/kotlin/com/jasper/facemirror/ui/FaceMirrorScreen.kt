@@ -17,6 +17,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +37,7 @@ import com.jasper.facemirror.audio.JasperVoiceSpeaker
 import com.jasper.facemirror.camera.FaceAnalyzer
 import com.jasper.facemirror.model.DialogPhase
 import com.jasper.facemirror.model.FaceExpression
+import com.jasper.facemirror.model.FaceGestureReactions
 import com.jasper.facemirror.model.FaceState
 import com.jasper.facemirror.model.GreetingReply
 import com.jasper.facemirror.model.SpeechState
@@ -48,6 +51,9 @@ import java.util.concurrent.Executors
 
 private const val REPLY_COOLDOWN_MS = 2500L
 private const val EXPRESSION_HOLD_MS = 5000L
+private const val SMILE_THRESHOLD = 0.52f
+private const val SMILE_HOLD_FRAMES = 6
+private const val SMILE_REACTION_COOLDOWN_MS = 10000L
 
 @Composable
 fun FaceMirrorScreen() {
@@ -72,7 +78,10 @@ fun FaceMirrorScreen() {
     var faceExpression by remember { mutableStateOf(FaceExpression.NEUTRAL) }
     var dialogPhase by remember { mutableStateOf(DialogPhase.IDLE) }
     var isJasperSpeaking by remember { mutableStateOf(false) }
+    var lipPulse by remember { mutableFloatStateOf(0f) }
     var lastReplyMs by remember { mutableLongStateOf(0L) }
+    var lastSmileReplyMs by remember { mutableLongStateOf(0L) }
+    var smileHoldFrames by remember { mutableIntStateOf(0) }
     var expressionResetJob by remember { mutableStateOf<Job?>(null) }
 
     val voiceSpeaker = remember { JasperVoiceSpeaker(context) }
@@ -82,7 +91,9 @@ fun FaceMirrorScreen() {
     DisposableEffect(voiceSpeaker) {
         voiceSpeaker.setOnSpeakingChanged { speaking ->
             isJasperSpeaking = speaking
+            if (!speaking) lipPulse = 0f
         }
+        voiceSpeaker.setOnLipPulse { pulse -> lipPulse = pulse }
         onDispose { }
     }
 
@@ -130,9 +141,14 @@ fun FaceMirrorScreen() {
         }
     }
 
-    fun respondWithVoice(reply: GreetingReply) {
+    fun respondWithVoice(reply: GreetingReply, ignoreCooldown: Boolean = false) {
         val now = System.currentTimeMillis()
-        if (now - lastReplyMs < REPLY_COOLDOWN_MS && dialogPhase != DialogPhase.INTERRUPTED) return
+        if (!ignoreCooldown &&
+            now - lastReplyMs < REPLY_COOLDOWN_MS &&
+            dialogPhase != DialogPhase.INTERRUPTED
+        ) {
+            return
+        }
         lastReplyMs = now
 
         speechEngine?.pauseListening()
@@ -147,6 +163,39 @@ fun FaceMirrorScreen() {
             speechEngine?.resumeListening()
             resetExpressionLater()
         }
+    }
+
+    fun canReactToFaceGesture(): Boolean {
+        // Не смотрим speechState.isSpeaking — RMS микрофона даёт ложные срабатывания
+        if (isJasperSpeaking) return false
+        if (dialogPhase == DialogPhase.THINKING || dialogPhase == DialogPhase.SPEAKING) return false
+        return true
+    }
+
+    fun maybeReactToSmile(state: FaceState) {
+        if (!state.isDetected) {
+            smileHoldFrames = 0
+            return
+        }
+        if (!canReactToFaceGesture()) {
+            smileHoldFrames = 0
+            return
+        }
+
+        if (state.smile >= SMILE_THRESHOLD) {
+            smileHoldFrames++
+        } else {
+            smileHoldFrames = 0
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        if (smileHoldFrames < SMILE_HOLD_FRAMES) return
+        if (now - lastSmileReplyMs < SMILE_REACTION_COOLDOWN_MS) return
+
+        lastSmileReplyMs = now
+        smileHoldFrames = 0
+        respondWithVoice(FaceGestureReactions.smileReply(), ignoreCooldown = true)
     }
 
     fun handleUserPhrase(phrase: String, history: List<String>) {
@@ -192,10 +241,15 @@ fun FaceMirrorScreen() {
             faceState = faceState,
             expression = faceExpression,
             dialogPhase = dialogPhase,
+            isSpeaking = isJasperSpeaking || dialogPhase == DialogPhase.SPEAKING,
+            lipPulse = lipPulse,
         )
 
         if (allPermissionsGranted) {
-            CameraAnalyzer(onFaceState = { faceState = it })
+            CameraAnalyzer(onFaceState = { state ->
+                faceState = state
+                maybeReactToSmile(state)
+            })
             SpeechListener(
                 onEngineReady = { engine ->
                     speechEngine = engine

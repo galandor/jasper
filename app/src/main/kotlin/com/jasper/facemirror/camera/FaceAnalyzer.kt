@@ -20,7 +20,7 @@ class FaceAnalyzer(
             .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
             .setMinFaceSize(0.15f)
             .enableTracking()
-            .build()
+            .build(),
     )
 
     @SuppressLint("UnsafeOptInUsageError")
@@ -33,7 +33,7 @@ class FaceAnalyzer(
 
         val inputImage = InputImage.fromMediaImage(
             mediaImage,
-            imageProxy.imageInfo.rotationDegrees
+            imageProxy.imageInfo.rotationDegrees,
         )
 
         detector.process(inputImage)
@@ -48,7 +48,6 @@ class FaceAnalyzer(
                     val rightOpen = face.rightEyeOpenProbability?.let { eyeOpenAmount(it) } ?: 1f
                     val smile = face.smilingProbability?.coerceIn(0f, 1f) ?: 0f
 
-                    // Инвертируем yaw — фронтальная камера работает как зеркало
                     FaceState(
                         leftEyeOpen = leftOpen,
                         rightEyeOpen = rightOpen,
@@ -66,7 +65,6 @@ class FaceAnalyzer(
             }
     }
 
-    /** ML Kit возвращает вероятность «открытости»; ниже порога — глаз закрыт. */
     private fun eyeOpenAmount(probability: Float): Float {
         return when {
             probability < BLINK_THRESHOLD -> 0f

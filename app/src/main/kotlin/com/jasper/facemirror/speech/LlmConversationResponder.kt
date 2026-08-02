@@ -14,37 +14,7 @@ class LlmConversationResponder(
     suspend fun respond(userPhrase: String, history: List<String> = emptyList()): GreetingReply? {
         if (!isAvailable) return null
 
-        val historyBlock = if (history.isEmpty()) {
-            ""
-        } else {
-            "\nНедавние фразы пользователя: ${history.joinToString(" | ")}"
-        }
-
-        val prompt = """
-            Ты Jasper — мультяшный неоновый персонаж: глаза, брови и рот на чёрном экране.
-            Говоришь коротко, живо. Всегда на русском.
-
-            Пользователь сказал: "$userPhrase"$historyBlock
-
-            Придумай короткий ответ (до 12 слов).
-            Выбери выражение лица (рот + брови + глаза):
-            - happy — радость, тепло
-            - playful — игривость
-            - sad — грусть
-            - offended — обида
-            - surprised — удивление
-            - angry — злость, раздражение
-            - afraid — страх, испуг
-            - sleepy — сонливость, усталость
-            - neutral — нейтрально
-
-            Если фраза непонятна или шум — should_reply: false.
-
-            Ответь ТОЛЬКО JSON:
-            {"should_reply":true,"reply":"текст","expression":"happy","voice":"cartoon"}
-            expression: happy | playful | sad | offended | surprised | angry | afraid | sleepy | neutral
-            voice: cartoon | happy | warm | playful | calm | sad | offended | angry | afraid | sleepy
-        """.trimIndent()
+        val prompt = JasperLlmPrompt.build(userPhrase, history)
 
         val raw = client.generate(prompt) ?: return null
         return parseResponse(raw)
