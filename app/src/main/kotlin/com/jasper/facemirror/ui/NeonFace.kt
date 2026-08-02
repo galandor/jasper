@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
+import com.jasper.facemirror.model.FaceExpression
 import com.jasper.facemirror.model.FaceState
 import kotlin.math.cos
 import kotlin.math.sin
@@ -36,27 +37,20 @@ private val BackgroundBlack = Color(0xFF000000)
 private val NeonCyan = Color(0xFF00F0FF)
 private val NeonPink = Color(0xFFFF2DAA)
 private val NeonYellow = Color(0xFFFFEA00)
+private val NeonPurple = Color(0xFFB388FF)
 
 @Composable
 fun NeonFace(
     faceState: FaceState,
-    isGreeting: Boolean = false,
+    expression: FaceExpression = FaceExpression.NEUTRAL,
     modifier: Modifier = Modifier,
 ) {
-    val leftEyeOpen by animateFloatAsState(
-        targetValue = if (isGreeting) faceState.leftEyeOpen * 0.75f else faceState.leftEyeOpen,
-        animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.65f),
-        label = "leftEye",
-    )
-    val rightEyeOpen by animateFloatAsState(
-        targetValue = if (isGreeting) faceState.rightEyeOpen * 0.75f else faceState.rightEyeOpen,
-        animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.65f),
-        label = "rightEye",
-    )
-    val baseSmile = if (isGreeting) maxOf(faceState.smile, 0.85f) else faceState.smile
+    // Глаза всегда открыты — моргание с камеры отключено
+    val eyeOpen = 1f
+
     val smile by animateFloatAsState(
-        targetValue = baseSmile,
-        animationSpec = spring(stiffness = Spring.StiffnessLow, dampingRatio = 0.7f),
+        targetValue = expression.smileAmount,
+        animationSpec = spring(stiffness = Spring.StiffnessLow, dampingRatio = 0.72f),
         label = "smile",
     )
     val yaw by animateFloatAsState(
@@ -70,21 +64,33 @@ fun NeonFace(
         label = "pitch",
     )
 
-    val greetingBounce = remember { Animatable(1f) }
-    LaunchedEffect(isGreeting) {
-        if (isGreeting) {
-            greetingBounce.snapTo(1f)
-            greetingBounce.animateTo(1.12f, spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.45f))
-            greetingBounce.animateTo(1f, spring(stiffness = Spring.StiffnessLow, dampingRatio = 0.6f))
+    val expressionBounce = remember { Animatable(1f) }
+    LaunchedEffect(expression) {
+        if (expression != FaceExpression.NEUTRAL) {
+            expressionBounce.snapTo(1f)
+            expressionBounce.animateTo(
+                1.06f,
+                spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.5f),
+            )
+            expressionBounce.animateTo(
+                1f,
+                spring(stiffness = Spring.StiffnessLow, dampingRatio = 0.65f),
+            )
         }
+    }
+
+    val glowSpeed = when (expression) {
+        FaceExpression.HAPPY, FaceExpression.PLAYFUL -> 900
+        FaceExpression.OFFENDED, FaceExpression.SAD -> 3200
+        else -> 2200
     }
 
     val infiniteTransition = rememberInfiniteTransition(label = "neonPulse")
     val glowPulse by infiniteTransition.animateFloat(
-        initialValue = if (isGreeting) 0.95f else 0.85f,
+        initialValue = 0.85f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(if (isGreeting) 600 else 2200, easing = FastOutSlowInEasing),
+            animation = tween(glowSpeed, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "glowPulse",
@@ -113,6 +119,12 @@ fun NeonFace(
         cos(idlePhase.value * 2f * Math.PI.toFloat()) * 0.12f
     }
 
+    val mouthColor = when (expression) {
+        FaceExpression.HAPPY, FaceExpression.PLAYFUL -> NeonYellow
+        FaceExpression.SAD, FaceExpression.OFFENDED -> NeonPurple
+        FaceExpression.SURPRISED -> NeonCyan
+        else -> NeonPink
+    }
 
     Box(
         modifier = modifier
@@ -120,7 +132,7 @@ fun NeonFace(
             .background(BackgroundBlack),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val scale = size.height * 0.0016f * greetingBounce.value
+            val scale = size.height * 0.0016f * expressionBounce.value
             val cx = size.width / 2f
             val cy = size.height * 0.44f
 
@@ -131,12 +143,11 @@ fun NeonFace(
                 val eyeSpacing = size.width / scale * 0.22f
                 val eyeRadius = size.height / scale * 0.11f
                 val mouthY = eyeRadius * 1.55f
-                val mouthColor = if (isGreeting) NeonYellow else NeonPink
 
                 drawNeonEye(
                     center = Offset(-eyeSpacing / 2f, 0f),
                     radius = eyeRadius,
-                    openAmount = leftEyeOpen,
+                    openAmount = eyeOpen,
                     gazeX = gazeX,
                     gazeY = gazeY,
                     headYaw = yaw,
@@ -146,7 +157,7 @@ fun NeonFace(
                 drawNeonEye(
                     center = Offset(eyeSpacing / 2f, 0f),
                     radius = eyeRadius,
-                    openAmount = rightEyeOpen,
+                    openAmount = eyeOpen,
                     gazeX = gazeX,
                     gazeY = gazeY,
                     headYaw = yaw,
@@ -154,12 +165,13 @@ fun NeonFace(
                     glowIntensity = glowPulse,
                 )
 
-                drawNeonSmile(
+                drawNeonMouth(
                     smile = smile,
                     y = mouthY,
                     width = eyeSpacing * 0.85f,
                     color = mouthColor,
                     glowIntensity = glowPulse,
+                    surprised = expression == FaceExpression.SURPRISED,
                 )
             }
         }
@@ -176,17 +188,6 @@ private fun DrawScope.drawNeonEye(
     color: Color,
     glowIntensity: Float,
 ) {
-    if (openAmount < 0.15f) {
-        drawNeonLine(
-            start = Offset(center.x - radius * 0.9f, center.y),
-            end = Offset(center.x + radius * 0.9f, center.y),
-            color = color,
-            coreWidth = 3.5f,
-            glowIntensity = glowIntensity,
-        )
-        return
-    }
-
     val squish = openAmount.coerceIn(0.2f, 1f)
     val rx = radius
     val ry = radius * squish
@@ -216,20 +217,40 @@ private fun DrawScope.drawNeonEye(
     )
 }
 
-private fun DrawScope.drawNeonSmile(
+private fun DrawScope.drawNeonMouth(
     smile: Float,
     y: Float,
     width: Float,
     color: Color,
     glowIntensity: Float,
+    surprised: Boolean = false,
 ) {
-    val mouthWidth = width * (0.55f + smile * 0.35f)
-    val mouthCurve = 12f + smile * 50f
-    val coreWidth = 4f + smile * 2.5f
+    if (surprised) {
+        val mouthW = width * 0.18f
+        val mouthH = width * 0.14f
+        drawNeonEllipse(
+            center = Offset(0f, y + mouthH * 0.2f),
+            radiusX = mouthW / 2f,
+            radiusY = mouthH / 2f,
+            color = color,
+            coreWidth = 4f,
+            glowIntensity = glowIntensity,
+        )
+        return
+    }
+
+    val absSmile = kotlin.math.abs(smile).coerceIn(0.05f, 1f)
+    val mouthWidth = width * (0.5f + absSmile * 0.35f)
+    val curve = 12f + absSmile * 50f
+    val coreWidth = 4f + absSmile * 2.5f
 
     val path = Path().apply {
         moveTo(-mouthWidth / 2f, y)
-        quadraticTo(0f, y + mouthCurve, mouthWidth / 2f, y)
+        if (smile >= 0f) {
+            quadraticTo(0f, y + curve, mouthWidth / 2f, y)
+        } else {
+            quadraticTo(0f, y - curve, mouthWidth / 2f, y)
+        }
     }
 
     drawNeonPath(
@@ -249,12 +270,12 @@ private fun DrawScope.drawNeonEllipse(
     glowIntensity: Float,
 ) {
     val layers = glowLayers(glowIntensity)
-    for ((width, alpha) in layers) {
+    for ((w, alpha) in layers) {
         drawOval(
             color = color.copy(alpha = alpha),
             topLeft = Offset(center.x - radiusX, center.y - radiusY),
             size = Size(radiusX * 2f, radiusY * 2f),
-            style = Stroke(width = width + coreWidth),
+            style = Stroke(width = w + coreWidth),
         )
     }
     drawOval(
@@ -293,39 +314,6 @@ private fun DrawScope.drawNeonFilledCircle(
     )
 }
 
-private fun DrawScope.drawNeonLine(
-    start: Offset,
-    end: Offset,
-    color: Color,
-    coreWidth: Float,
-    glowIntensity: Float,
-) {
-    val layers = glowLayers(glowIntensity)
-    for ((width, alpha) in layers) {
-        drawLine(
-            color = color.copy(alpha = alpha),
-            start = start,
-            end = end,
-            strokeWidth = width + coreWidth,
-            cap = StrokeCap.Round,
-        )
-    }
-    drawLine(
-        color = color,
-        start = start,
-        end = end,
-        strokeWidth = coreWidth,
-        cap = StrokeCap.Round,
-    )
-    drawLine(
-        color = Color.White.copy(alpha = 0.6f * glowIntensity),
-        start = start,
-        end = end,
-        strokeWidth = coreWidth * 0.3f,
-        cap = StrokeCap.Round,
-    )
-}
-
 private fun DrawScope.drawNeonPath(
     path: Path,
     color: Color,
@@ -333,11 +321,11 @@ private fun DrawScope.drawNeonPath(
     glowIntensity: Float,
 ) {
     val layers = glowLayers(glowIntensity)
-    for ((width, alpha) in layers) {
+    for ((w, alpha) in layers) {
         drawPath(
             path = path,
             color = color.copy(alpha = alpha),
-            style = Stroke(width = width + coreWidth, cap = StrokeCap.Round),
+            style = Stroke(width = w + coreWidth, cap = StrokeCap.Round),
         )
     }
     drawPath(

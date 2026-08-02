@@ -1,5 +1,6 @@
 package com.jasper.facemirror.speech
 
+import com.jasper.facemirror.model.FaceExpression
 import com.jasper.facemirror.model.GreetingReply
 import com.jasper.facemirror.model.VoiceEmotion
 
@@ -14,29 +15,39 @@ object GreetingDetector {
 
     private val triggers = listOf(
         Trigger(
+            pattern = Regex("""не хочу.*видеть|уходи|отвали|ненавижу|достал""", RegexOption.IGNORE_CASE),
+            replies = listOf(
+                GreetingReply("Эх...", cartoon, FaceExpression.OFFENDED),
+                GreetingReply("Обидно...", VoiceEmotion.SAD, FaceExpression.SAD),
+            ),
+        ),
+        Trigger(
+            pattern = Regex("""рад.*видеть|скучал|люблю""", RegexOption.IGNORE_CASE),
+            replies = listOf(
+                GreetingReply("И я рад!", cartoon, FaceExpression.HAPPY),
+                GreetingReply("Ура, ты здесь!", VoiceEmotion.HAPPY, FaceExpression.HAPPY),
+            ),
+        ),
+        Trigger(
             pattern = Regex("""приветик|хай|хей""", RegexOption.IGNORE_CASE),
             replies = listOf(
-                GreetingReply("Привет-привет!", cartoon),
-                GreetingReply("Хей-хей!", cartoon),
-                GreetingReply("Ура, приветик!", cartoon),
+                GreetingReply("Привет-привет!", cartoon, FaceExpression.PLAYFUL),
+                GreetingReply("Хей-хей!", cartoon, FaceExpression.PLAYFUL),
             ),
         ),
         Trigger(
             pattern = Regex("""здравствуй|добрый день|доброе утро|добрый вечер""", RegexOption.IGNORE_CASE),
             replies = listOf(
-                GreetingReply("Здравствуй!", cartoon),
-                GreetingReply("О, привет!", cartoon),
-                GreetingReply("Рад тебя видеть!", cartoon),
+                GreetingReply("Здравствуй!", cartoon, FaceExpression.HAPPY),
+                GreetingReply("Рад тебя видеть!", VoiceEmotion.WARM, FaceExpression.HAPPY),
             ),
         ),
         Trigger(
             pattern = Regex("""привет""", RegexOption.IGNORE_CASE),
             replies = listOf(
-                GreetingReply("Привет!", cartoon),
-                GreetingReply("Приве-ет!", cartoon),
-                GreetingReply("О, привет!", cartoon),
-                GreetingReply("Ура, привет!", cartoon),
-                GreetingReply("Йоу, привет!", cartoon),
+                GreetingReply("Привет!", cartoon, FaceExpression.HAPPY),
+                GreetingReply("Приве-ет!", cartoon, FaceExpression.HAPPY),
+                GreetingReply("Ура, привет!", cartoon, FaceExpression.PLAYFUL),
             ),
         ),
     )
@@ -49,7 +60,4 @@ object GreetingDetector {
             ?.replies
             ?.random()
     }
-
-    /** @deprecated используйте [match] */
-    fun isHello(text: String): Boolean = match(text) != null
 }

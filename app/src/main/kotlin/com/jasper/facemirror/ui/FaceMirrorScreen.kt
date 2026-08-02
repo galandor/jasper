@@ -16,11 +16,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -31,23 +31,25 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.jasper.facemirror.R
-import com.jasper.facemirror.audio.JasperSoundPlayer
 import com.jasper.facemirror.audio.JasperVoiceSpeaker
 import com.jasper.facemirror.camera.FaceAnalyzer
+import com.jasper.facemirror.model.FaceExpression
 import com.jasper.facemirror.model.FaceState
 import com.jasper.facemirror.model.GreetingReply
 import com.jasper.facemirror.model.SpeechState
 import com.jasper.facemirror.speech.ConversationBrain
 import com.jasper.facemirror.speech.SpeechRecognizerEngine
 import kotlinx.coroutines.delay
-import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
 private const val REPLY_COOLDOWN_MS = 2500L
+private const val EXPRESSION_HOLD_MS = 5000L
 
 @Composable
 fun FaceMirrorScreen() {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -64,23 +66,17 @@ fun FaceMirrorScreen() {
 
     var faceState by remember { mutableStateOf(FaceState.Idle) }
     var speechState by remember { mutableStateOf(SpeechState.Idle) }
-    var isGreeting by remember { mutableStateOf(false) }
+    var faceExpression by remember { mutableStateOf(FaceExpression.NEUTRAL) }
     var isReplying by remember { mutableStateOf(false) }
-    var wasFaceDetected by remember { mutableStateOf(false) }
     var lastReplyMs by remember { mutableLongStateOf(0L) }
     var lastProcessedPhrase by remember { mutableStateOf("") }
 
-    val scope = rememberCoroutineScope()
-    val soundPlayer = remember { JasperSoundPlayer() }
     val voiceSpeaker = remember { JasperVoiceSpeaker(context) }
     val conversationBrain = remember(scope) { ConversationBrain(scope) }
     var speechEngine by remember { mutableStateOf<SpeechRecognizerEngine?>(null) }
 
     DisposableEffect(Unit) {
-        onDispose {
-            soundPlayer.release()
-            voiceSpeaker.release()
-        }
+        onDispose { voiceSpeaker.release() }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -90,41 +86,30 @@ fun FaceMirrorScreen() {
         hasMicPermission = permissions[Manifest.permission.RECORD_AUDIO] == true
     }
 
-    LaunchedEffect(faceState.isDetected) {
-        if (faceState.isDetected && !wasFaceDetected) {
-            isGreeting = true
-            soundPlayer.playGreeting()
-            wasFaceDetected = true
-            delay(2500)
-            isGreeting = false
-        } else if (!faceState.isDetected) {
-            wasFaceDetected = false
-            isGreeting = false
-        }
-    }
-
-
     val allPermissionsGranted = hasCameraPermission && hasMicPermission
 
-    fun respondWithVoice(reply: GreetingReply, animated: Boolean = true) {
+    fun respondWithVoice(reply: GreetingReply) {
         val now = System.currentTimeMillis()
         if (now - lastReplyMs < REPLY_COOLDOWN_MS) return
         lastReplyMs = now
 
+        faceExpression = reply.expression
         speechEngine?.pauseListening()
         isReplying = true
-        if (animated) isGreeting = true
         voiceSpeaker.speakGreeting(reply) {
             isReplying = false
-            if (animated) isGreeting = false
             speechEngine?.resumeListening()
+            scope.launch {
+                delay(EXPRESSION_HOLD_MS)
+                faceExpression = FaceExpression.NEUTRAL
+            }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         NeonFace(
             faceState = faceState,
-            isGreeting = isGreeting,
+            expression = faceExpression,
         )
 
         RecognizedWordsOverlay(speechState = speechState)
