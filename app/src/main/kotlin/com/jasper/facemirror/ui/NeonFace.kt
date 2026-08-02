@@ -19,6 +19,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -28,10 +30,13 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
+import com.jasper.facemirror.model.DialogPhase
 import com.jasper.facemirror.model.FaceExpression
 import com.jasper.facemirror.model.FaceState
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.random.Random
+import kotlinx.coroutines.delay
 
 private val BackgroundBlack = Color(0xFF000000)
 private val NeonCyan = Color(0xFF00F0FF)
@@ -44,10 +49,12 @@ private val NeonOrange = Color(0xFFFF5722)
 fun NeonFace(
     faceState: FaceState,
     expression: FaceExpression = FaceExpression.NEUTRAL,
+    dialogPhase: DialogPhase = DialogPhase.IDLE,
     modifier: Modifier = Modifier,
 ) {
+    val baseEyeOpen = expression.eyeOpen.coerceIn(0.2f, 1.1f)
     val eyeOpen by animateFloatAsState(
-        targetValue = expression.eyeOpen.coerceIn(0.2f, 1.1f),
+        targetValue = baseEyeOpen,
         animationSpec = spring(stiffness = Spring.StiffnessLow, dampingRatio = 0.72f),
         label = "eyeOpen",
     )
@@ -57,12 +64,12 @@ fun NeonFace(
         label = "smile",
     )
     val browInner by animateFloatAsState(
-        targetValue = expression.browInnerLift,
+        targetValue = expression.browInnerLift + dialogBrowInnerAdjust(dialogPhase),
         animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.7f),
         label = "browInner",
     )
     val browOuter by animateFloatAsState(
-        targetValue = expression.browOuterLift,
+        targetValue = expression.browOuterLift + dialogBrowOuterAdjust(dialogPhase),
         animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.7f),
         label = "browOuter",
     )
@@ -124,13 +131,57 @@ fun NeonFace(
         }
     }
 
+    val breathe by infiniteTransition.animateFloat(
+        initialValue = 0.99f,
+        targetValue = 1.02f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(3200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "breathe",
+    )
+
+    val blinkOpen = remember { Animatable(1f) }
+    LaunchedEffect(faceState.isDetected, expression) {
+        while (faceState.isDetected && expression == FaceExpression.NEUTRAL) {
+            delay(Random.nextLong(3000, 7000))
+            if (!faceState.isDetected || expression != FaceExpression.NEUTRAL) break
+            blinkOpen.animateTo(0.06f, tween(70, easing = LinearEasing))
+            blinkOpen.animateTo(1f, tween(110, easing = LinearEasing))
+        }
+        blinkOpen.snapTo(1f)
+    }
+
+    var saccadeX by remember { mutableFloatStateOf(0f) }
+    var saccadeY by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(faceState.isDetected) {
+        if (!faceState.isDetected) {
+            saccadeX = 0f
+            saccadeY = 0f
+            return@LaunchedEffect
+        }
+        while (true) {
+            delay(Random.nextLong(2000, 4500))
+            if (!faceState.isDetected) break
+            saccadeX = Random.nextFloat() * 0.1f - 0.05f
+            saccadeY = Random.nextFloat() * 0.06f - 0.03f
+            delay(180)
+            saccadeX = 0f
+            saccadeY = 0f
+        }
+    }
+
+    val effectiveEyeOpen = eyeOpen * blinkOpen.value
+
+    val thinkingGazeY = if (dialogPhase == DialogPhase.THINKING) -0.14f else 0f
+
     val gazeX = if (faceState.isDetected) {
-        (yaw / 35f) * 0.4f
+        (yaw / 35f) * 0.4f + saccadeX
     } else {
         sin(idlePhase.value * 2f * Math.PI.toFloat()) * 0.2f
     }
     val gazeY = if (faceState.isDetected) {
-        (pitch / 25f) * 0.3f
+        (pitch / 25f) * 0.3f + saccadeY + thinkingGazeY
     } else {
         cos(idlePhase.value * 2f * Math.PI.toFloat()) * 0.12f
     }
@@ -150,7 +201,7 @@ fun NeonFace(
             .background(BackgroundBlack),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val scale = size.height * 0.0016f * expressionBounce.value
+            val scale = size.height * 0.0016f * expressionBounce.value * breathe
             val cx = size.width / 2f
             val cy = size.height * 0.44f
 
@@ -186,7 +237,7 @@ fun NeonFace(
                 drawNeonEye(
                     center = leftEye,
                     radius = eyeRadius,
-                    openAmount = eyeOpen,
+                    openAmount = effectiveEyeOpen,
                     gazeX = gazeX,
                     gazeY = gazeY,
                     headYaw = yaw,
@@ -196,7 +247,7 @@ fun NeonFace(
                 drawNeonEye(
                     center = rightEye,
                     radius = eyeRadius,
-                    openAmount = eyeOpen,
+                    openAmount = effectiveEyeOpen,
                     gazeX = gazeX,
                     gazeY = gazeY,
                     headYaw = yaw,
@@ -414,6 +465,17 @@ private fun DrawScope.drawNeonPath(
         color = Color.White.copy(alpha = 0.55f * glowIntensity),
         style = Stroke(width = coreWidth * 0.3f, cap = StrokeCap.Round),
     )
+}
+
+private fun dialogBrowInnerAdjust(phase: DialogPhase): Float = when (phase) {
+    DialogPhase.LISTENING -> -3f
+    DialogPhase.THINKING -> -5f
+    else -> 0f
+}
+
+private fun dialogBrowOuterAdjust(phase: DialogPhase): Float = when (phase) {
+    DialogPhase.LISTENING -> -2f
+    else -> 0f
 }
 
 private fun glowLayers(
