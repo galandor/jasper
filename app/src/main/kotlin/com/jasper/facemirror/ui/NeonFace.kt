@@ -38,6 +38,7 @@ private val NeonCyan = Color(0xFF00F0FF)
 private val NeonPink = Color(0xFFFF2DAA)
 private val NeonYellow = Color(0xFFFFEA00)
 private val NeonPurple = Color(0xFFB388FF)
+private val NeonOrange = Color(0xFFFF5722)
 
 @Composable
 fun NeonFace(
@@ -45,13 +46,25 @@ fun NeonFace(
     expression: FaceExpression = FaceExpression.NEUTRAL,
     modifier: Modifier = Modifier,
 ) {
-    // Глаза всегда открыты — моргание с камеры отключено
-    val eyeOpen = 1f
-
+    val eyeOpen by animateFloatAsState(
+        targetValue = expression.eyeOpen.coerceIn(0.2f, 1.1f),
+        animationSpec = spring(stiffness = Spring.StiffnessLow, dampingRatio = 0.72f),
+        label = "eyeOpen",
+    )
     val smile by animateFloatAsState(
         targetValue = expression.smileAmount,
         animationSpec = spring(stiffness = Spring.StiffnessLow, dampingRatio = 0.72f),
         label = "smile",
+    )
+    val browInner by animateFloatAsState(
+        targetValue = expression.browInnerLift,
+        animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.7f),
+        label = "browInner",
+    )
+    val browOuter by animateFloatAsState(
+        targetValue = expression.browOuterLift,
+        animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.7f),
+        label = "browOuter",
     )
     val yaw by animateFloatAsState(
         targetValue = faceState.yaw.coerceIn(-35f, 35f),
@@ -81,6 +94,9 @@ fun NeonFace(
 
     val glowSpeed = when (expression) {
         FaceExpression.HAPPY, FaceExpression.PLAYFUL -> 900
+        FaceExpression.ANGRY -> 700
+        FaceExpression.AFRAID -> 500
+        FaceExpression.SLEEPY -> 4500
         FaceExpression.OFFENDED, FaceExpression.SAD -> 3200
         else -> 2200
     }
@@ -119,10 +135,12 @@ fun NeonFace(
         cos(idlePhase.value * 2f * Math.PI.toFloat()) * 0.12f
     }
 
-    val mouthColor = when (expression) {
+    val accentColor = when (expression) {
         FaceExpression.HAPPY, FaceExpression.PLAYFUL -> NeonYellow
         FaceExpression.SAD, FaceExpression.OFFENDED -> NeonPurple
-        FaceExpression.SURPRISED -> NeonCyan
+        FaceExpression.SURPRISED, FaceExpression.AFRAID -> NeonCyan
+        FaceExpression.ANGRY -> NeonOrange
+        FaceExpression.SLEEPY -> NeonPink.copy(alpha = 0.55f)
         else -> NeonPink
     }
 
@@ -143,9 +161,30 @@ fun NeonFace(
                 val eyeSpacing = size.width / scale * 0.22f
                 val eyeRadius = size.height / scale * 0.11f
                 val mouthY = eyeRadius * 1.55f
+                val leftEye = Offset(-eyeSpacing / 2f, 0f)
+                val rightEye = Offset(eyeSpacing / 2f, 0f)
+
+                drawNeonEyebrow(
+                    eyeCenter = leftEye,
+                    eyeRadius = eyeRadius,
+                    innerLift = browInner,
+                    outerLift = browOuter,
+                    color = accentColor,
+                    glowIntensity = glowPulse,
+                    isLeftEye = true,
+                )
+                drawNeonEyebrow(
+                    eyeCenter = rightEye,
+                    eyeRadius = eyeRadius,
+                    innerLift = browInner,
+                    outerLift = browOuter,
+                    color = accentColor,
+                    glowIntensity = glowPulse,
+                    isLeftEye = false,
+                )
 
                 drawNeonEye(
-                    center = Offset(-eyeSpacing / 2f, 0f),
+                    center = leftEye,
                     radius = eyeRadius,
                     openAmount = eyeOpen,
                     gazeX = gazeX,
@@ -155,7 +194,7 @@ fun NeonFace(
                     glowIntensity = glowPulse,
                 )
                 drawNeonEye(
-                    center = Offset(eyeSpacing / 2f, 0f),
+                    center = rightEye,
                     radius = eyeRadius,
                     openAmount = eyeOpen,
                     gazeX = gazeX,
@@ -169,13 +208,38 @@ fun NeonFace(
                     smile = smile,
                     y = mouthY,
                     width = eyeSpacing * 0.85f,
-                    color = mouthColor,
+                    color = accentColor,
                     glowIntensity = glowPulse,
                     surprised = expression == FaceExpression.SURPRISED,
+                    sleepy = expression == FaceExpression.SLEEPY,
                 )
             }
         }
     }
+}
+
+private fun DrawScope.drawNeonEyebrow(
+    eyeCenter: Offset,
+    eyeRadius: Float,
+    innerLift: Float,
+    outerLift: Float,
+    color: Color,
+    glowIntensity: Float,
+    isLeftEye: Boolean,
+) {
+    val browBaseY = eyeCenter.y - eyeRadius * 0.72f
+    val innerX = if (isLeftEye) eyeCenter.x + eyeRadius * 0.38f else eyeCenter.x - eyeRadius * 0.38f
+    val outerX = if (isLeftEye) eyeCenter.x - eyeRadius * 0.88f else eyeCenter.x + eyeRadius * 0.88f
+    val inner = Offset(innerX, browBaseY + innerLift)
+    val outer = Offset(outerX, browBaseY + outerLift)
+    val midX = (inner.x + outer.x) / 2f
+    val midY = (inner.y + outer.y) / 2f - eyeRadius * 0.12f
+
+    val path = Path().apply {
+        moveTo(inner.x, inner.y)
+        quadraticTo(midX, midY, outer.x, outer.y)
+    }
+    drawNeonPath(path, color, 3.8f, glowIntensity)
 }
 
 private fun DrawScope.drawNeonEye(
@@ -188,8 +252,8 @@ private fun DrawScope.drawNeonEye(
     color: Color,
     glowIntensity: Float,
 ) {
-    val squish = openAmount.coerceIn(0.2f, 1f)
-    val rx = radius
+    val squish = openAmount.coerceIn(0.2f, 1.15f)
+    val rx = radius * if (openAmount > 1f) openAmount else 1f
     val ry = radius * squish
 
     drawNeonEllipse(
@@ -201,13 +265,15 @@ private fun DrawScope.drawNeonEye(
         glowIntensity = glowIntensity,
     )
 
+    if (openAmount < 0.4f) return
+
     val maxOffsetX = rx * 0.42f
     val maxOffsetY = ry * 0.42f
     val pupilCenter = Offset(
         center.x + gazeX * maxOffsetX + (headYaw / 35f) * maxOffsetX * 0.35f,
         center.y + gazeY * maxOffsetY,
     )
-    val pupilRadius = radius * 0.18f * squish
+    val pupilRadius = radius * 0.18f * squish.coerceAtMost(1f)
 
     drawNeonFilledCircle(
         center = pupilCenter,
@@ -224,6 +290,7 @@ private fun DrawScope.drawNeonMouth(
     color: Color,
     glowIntensity: Float,
     surprised: Boolean = false,
+    sleepy: Boolean = false,
 ) {
     if (surprised) {
         val mouthW = width * 0.18f
@@ -235,6 +302,20 @@ private fun DrawScope.drawNeonMouth(
             color = color,
             coreWidth = 4f,
             glowIntensity = glowIntensity,
+        )
+        return
+    }
+
+    if (sleepy) {
+        val mouthW = width * 0.22f
+        drawNeonPath(
+            path = Path().apply {
+                moveTo(-mouthW / 2f, y)
+                lineTo(mouthW / 2f, y)
+            },
+            color = color,
+            coreWidth = 3f,
+            glowIntensity = glowIntensity * 0.7f,
         )
         return
     }
@@ -253,12 +334,7 @@ private fun DrawScope.drawNeonMouth(
         }
     }
 
-    drawNeonPath(
-        path = path,
-        color = color,
-        coreWidth = coreWidth,
-        glowIntensity = glowIntensity,
-    )
+    drawNeonPath(path, color, coreWidth, glowIntensity)
 }
 
 private fun DrawScope.drawNeonEllipse(

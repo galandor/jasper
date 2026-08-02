@@ -112,8 +112,6 @@ fun FaceMirrorScreen() {
             expression = faceExpression,
         )
 
-        RecognizedWordsOverlay(speechState = speechState)
-
         if (allPermissionsGranted) {
             CameraAnalyzer(onFaceState = { faceState = it })
             SpeechListener(

@@ -15,7 +15,28 @@ object GreetingDetector {
 
     private val triggers = listOf(
         Trigger(
-            pattern = Regex("""не хочу.*видеть|уходи|отвали|ненавижу|достал""", RegexOption.IGNORE_CASE),
+            pattern = Regex("""боюсь|страшно|испугал|жуть""", RegexOption.IGNORE_CASE),
+            replies = listOf(
+                GreetingReply("Ой-ой!", VoiceEmotion.AFRAID, FaceExpression.AFRAID),
+                GreetingReply("Страшно...", VoiceEmotion.AFRAID, FaceExpression.AFRAID),
+            ),
+        ),
+        Trigger(
+            pattern = Regex("""злюсь|бесит|разозли|достал|ненавижу""", RegexOption.IGNORE_CASE),
+            replies = listOf(
+                GreetingReply("Гррр!", VoiceEmotion.ANGRY, FaceExpression.ANGRY),
+                GreetingReply("Не нравится!", VoiceEmotion.ANGRY, FaceExpression.ANGRY),
+            ),
+        ),
+        Trigger(
+            pattern = Regex("""спать|сонн|устал|засыпа""", RegexOption.IGNORE_CASE),
+            replies = listOf(
+                GreetingReply("Хо-о-он...", VoiceEmotion.SLEEPY, FaceExpression.SLEEPY),
+                GreetingReply("Так сонно...", VoiceEmotion.SLEEPY, FaceExpression.SLEEPY),
+            ),
+        ),
+        Trigger(
+            pattern = Regex("""не хочу.*видеть|уходи|отвали""", RegexOption.IGNORE_CASE),
             replies = listOf(
                 GreetingReply("Эх...", cartoon, FaceExpression.OFFENDED),
                 GreetingReply("Обидно...", VoiceEmotion.SAD, FaceExpression.SAD),

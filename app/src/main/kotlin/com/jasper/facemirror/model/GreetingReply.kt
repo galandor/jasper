@@ -8,6 +8,9 @@ enum class VoiceEmotion {
     CALM,
     SAD,
     OFFENDED,
+    ANGRY,
+    AFRAID,
+    SLEEPY,
 }
 
 data class GreetingReply(
@@ -24,6 +27,9 @@ data class GreetingReply(
             VoiceEmotion.CALM -> 0.95f
             VoiceEmotion.SAD -> 0.88f
             VoiceEmotion.OFFENDED -> 0.82f
+            VoiceEmotion.ANGRY -> 0.78f
+            VoiceEmotion.AFRAID -> 1.25f
+            VoiceEmotion.SLEEPY -> 0.82f
         }
 
     val speechRate: Float
@@ -35,5 +41,8 @@ data class GreetingReply(
             VoiceEmotion.CALM -> 0.88f
             VoiceEmotion.SAD -> 0.85f
             VoiceEmotion.OFFENDED -> 0.9f
+            VoiceEmotion.ANGRY -> 1.05f
+            VoiceEmotion.AFRAID -> 1.2f
+            VoiceEmotion.SLEEPY -> 0.72f
         }
 }
