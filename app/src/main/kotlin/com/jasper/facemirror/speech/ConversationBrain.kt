@@ -7,20 +7,21 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Сначала пробует LLM (если настроен API-ключ), иначе — локальные правила.
+ * LLM отвечает на любую фразу; без ключа — только локальные приветствия.
  */
-class GreetingBrain(
+class ConversationBrain(
     private val scope: CoroutineScope,
-    private val llm: LlmGreetingResponder = LlmGreetingResponder(),
+    private val llm: LlmConversationResponder = LlmConversationResponder(),
     private val local: GreetingDetector = GreetingDetector,
 ) {
     fun respondToPhrase(
         phrase: String,
+        history: List<String> = emptyList(),
         onReply: (GreetingReply) -> Unit,
     ) {
         scope.launch {
             val reply = if (llm.isAvailable) {
-                llm.respond(phrase) ?: local.match(phrase)
+                llm.respond(phrase, history) ?: local.match(phrase)
             } else {
                 local.match(phrase)
             }

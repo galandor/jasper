@@ -37,13 +37,13 @@ import com.jasper.facemirror.camera.FaceAnalyzer
 import com.jasper.facemirror.model.FaceState
 import com.jasper.facemirror.model.GreetingReply
 import com.jasper.facemirror.model.SpeechState
-import com.jasper.facemirror.speech.GreetingBrain
+import com.jasper.facemirror.speech.ConversationBrain
 import com.jasper.facemirror.speech.SpeechRecognizerEngine
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.rememberCoroutineScope
 import java.util.concurrent.Executors
 
-private const val HELLO_COOLDOWN_MS = 4000L
+private const val REPLY_COOLDOWN_MS = 2500L
 
 @Composable
 fun FaceMirrorScreen() {
@@ -67,13 +67,13 @@ fun FaceMirrorScreen() {
     var isGreeting by remember { mutableStateOf(false) }
     var isReplying by remember { mutableStateOf(false) }
     var wasFaceDetected by remember { mutableStateOf(false) }
-    var lastHelloResponseMs by remember { mutableLongStateOf(0L) }
+    var lastReplyMs by remember { mutableLongStateOf(0L) }
     var lastProcessedPhrase by remember { mutableStateOf("") }
 
     val scope = rememberCoroutineScope()
     val soundPlayer = remember { JasperSoundPlayer() }
     val voiceSpeaker = remember { JasperVoiceSpeaker(context) }
-    val greetingBrain = remember(scope) { GreetingBrain(scope) }
+    val conversationBrain = remember(scope) { ConversationBrain(scope) }
     var speechEngine by remember { mutableStateOf<SpeechRecognizerEngine?>(null) }
 
     DisposableEffect(Unit) {
@@ -106,17 +106,17 @@ fun FaceMirrorScreen() {
 
     val allPermissionsGranted = hasCameraPermission && hasMicPermission
 
-    fun respondToHello(reply: GreetingReply) {
+    fun respondWithVoice(reply: GreetingReply, animated: Boolean = true) {
         val now = System.currentTimeMillis()
-        if (now - lastHelloResponseMs < HELLO_COOLDOWN_MS) return
-        lastHelloResponseMs = now
+        if (now - lastReplyMs < REPLY_COOLDOWN_MS) return
+        lastReplyMs = now
 
         speechEngine?.pauseListening()
         isReplying = true
-        isGreeting = true
+        if (animated) isGreeting = true
         voiceSpeaker.speakGreeting(reply) {
             isReplying = false
-            isGreeting = false
+            if (animated) isGreeting = false
             speechEngine?.resumeListening()
         }
     }
@@ -138,8 +138,11 @@ fun FaceMirrorScreen() {
                     val phrase = state.recognizedText
                     if (phrase.isNotBlank() && phrase != lastProcessedPhrase) {
                         lastProcessedPhrase = phrase
-                        greetingBrain.respondToPhrase(phrase) { reply ->
-                            respondToHello(reply)
+                        conversationBrain.respondToPhrase(
+                            phrase = phrase,
+                            history = state.history,
+                        ) { reply ->
+                            respondWithVoice(reply)
                         }
                     }
                 },

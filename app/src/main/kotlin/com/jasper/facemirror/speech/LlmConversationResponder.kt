@@ -5,25 +5,33 @@ import com.jasper.facemirror.model.GreetingReply
 import com.jasper.facemirror.model.VoiceEmotion
 import org.json.JSONObject
 
-class LlmGreetingResponder(
+class LlmConversationResponder(
     private val client: GeminiClient = GeminiClient(),
 ) {
     val isAvailable: Boolean get() = client.isConfigured
 
-    suspend fun respond(userPhrase: String): GreetingReply? {
+    suspend fun respond(userPhrase: String, history: List<String> = emptyList()): GreetingReply? {
         if (!isAvailable) return null
 
-        val prompt = """
-            Ты Jasper — мультяшный неоновый персонаж (глаза и улыбка на чёрном экране).
-            Пользователь сказал: "$userPhrase"
+        val historyBlock = if (history.isEmpty()) {
+            ""
+        } else {
+            "\nНедавние фразы пользователя: ${history.joinToString(" | ")}"
+        }
 
-            Определи, является ли это приветствием (привет, здравствуй, хай, доброе утро, здорово, йо и т.п.).
-            Если да — придумай короткий живой ответ (до 8 слов), мультяшный и дружелюбный.
-            Если нет — is_greeting = false.
+        val prompt = """
+            Ты Jasper — мультяшный неоновый персонаж: глаза и улыбка на чёрном экране.
+            Говоришь коротко, живо, по-дружески, иногда с юмором. Всегда на русском.
+
+            Пользователь сказал: "$userPhrase"$historyBlock
+
+            Придумай короткий ответ по смыслу (до 12 слов).
+            На приветствие — поприветствуй. На вопрос — ответь. На шутку — подыграй.
+            Если фраза непонятна, бессмысленна или это шум — не отвечай.
 
             Ответь ТОЛЬКО JSON:
-            {"is_greeting":true,"reply":"текст","emotion":"cartoon"}
-            emotion: cartoon | happy | warm | playful
+            {"should_reply":true,"reply":"текст","emotion":"cartoon"}
+            emotion: cartoon | happy | warm | playful | calm
         """.trimIndent()
 
         val raw = client.generate(prompt) ?: return null
@@ -38,7 +46,7 @@ class LlmGreetingResponder(
                 .removeSuffix("```")
                 .trim()
             val json = JSONObject(cleaned)
-            if (!json.optBoolean("is_greeting", false)) return null
+            if (!json.optBoolean("should_reply", false)) return null
             val reply = json.optString("reply").trim()
             if (reply.isBlank()) return null
             val emotion = when (json.optString("emotion", "cartoon").lowercase()) {
