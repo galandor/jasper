@@ -37,9 +37,10 @@ import com.jasper.facemirror.camera.FaceAnalyzer
 import com.jasper.facemirror.model.FaceState
 import com.jasper.facemirror.model.GreetingReply
 import com.jasper.facemirror.model.SpeechState
-import com.jasper.facemirror.speech.GreetingDetector
+import com.jasper.facemirror.speech.GreetingBrain
 import com.jasper.facemirror.speech.SpeechRecognizerEngine
 import kotlinx.coroutines.delay
+import androidx.compose.runtime.rememberCoroutineScope
 import java.util.concurrent.Executors
 
 private const val HELLO_COOLDOWN_MS = 4000L
@@ -69,8 +70,10 @@ fun FaceMirrorScreen() {
     var lastHelloResponseMs by remember { mutableLongStateOf(0L) }
     var lastProcessedPhrase by remember { mutableStateOf("") }
 
+    val scope = rememberCoroutineScope()
     val soundPlayer = remember { JasperSoundPlayer() }
     val voiceSpeaker = remember { JasperVoiceSpeaker(context) }
+    val greetingBrain = remember(scope) { GreetingBrain(scope) }
     var speechEngine by remember { mutableStateOf<SpeechRecognizerEngine?>(null) }
 
     DisposableEffect(Unit) {
@@ -135,7 +138,7 @@ fun FaceMirrorScreen() {
                     val phrase = state.recognizedText
                     if (phrase.isNotBlank() && phrase != lastProcessedPhrase) {
                         lastProcessedPhrase = phrase
-                        GreetingDetector.match(phrase)?.let { reply ->
+                        greetingBrain.respondToPhrase(phrase) { reply ->
                             respondToHello(reply)
                         }
                     }

@@ -1,0 +1,7 @@
+# Скопируйте в local.properties (файл не коммитится в git)
+#
+# sdk.dir=/path/to/Android/sdk
+#
+# Опционально: ключ Gemini для умных приветствий
+# Получить: https://aistudio.google.com/apikey
+gemini.api.key=YOUR_KEY_HERE
