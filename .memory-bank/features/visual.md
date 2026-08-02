@@ -2,67 +2,116 @@
 
 ## Обзор
 
-Визуальный модуль — это неоновое «лицо» на чёрном фоне: два глаза и улыбка. Без контура лица, щёк, носа. Отрисовка полностью на Jetpack Compose `Canvas`.
+Визуальный модуль — неоновое «лицо» на чёрном фоне: глаза, брови, рот. Без контура лица, щёк, носа. Отрисовка на Jetpack Compose `Canvas`.
+
+Эмоции задаёт **LLM** (`FaceExpression`), а не зеркалирование с камеры. Камера используется для взгляда, моргания пользователя и детекции улыбки (реакция Jasper).
+
+---
 
 ## Стиль
 
 | Элемент | Цвет | HEX |
-|---|---|---|
+|---------|------|-----|
 | Фон | Чёрный | `#000000` |
 | Глаза | Cyan неон | `#00F0FF` |
-| Улыбка | Pink неон | `#FF2DAA` |
-| Улыбка (радость) | Yellow неон | `#FFFFEA00` |
+| Рот (обычный) | Pink неон | `#FF2DAA` |
+| Рот (радость) | Yellow неон | `#FFFFEA00` |
+| Акценты | Purple / Orange | `#B388FF` / `#FF5722` |
 
-Эффект неона — несколько слоёв stroke/circle с разной прозрачностью + тонкая белая «горячая» линия поверх.
+Эффект неона — несколько слоёв stroke с разной прозрачностью + тонкая белая «горячая» линия.
+
+---
 
 ## Ориентация
 
-- Экран зафиксирован в **landscape** (`AndroidManifest.xml`)
-- Элементы масштабируются от высоты экрана
-- Глаза расположены по центру, улыбка ниже
+- Экран в **landscape** (`AndroidManifest.xml`)
+- Масштаб от высоты экрана
+- Камера невидима (только `ImageAnalysis`, без preview)
+
+---
 
 ## Компоненты
 
 ### NeonFace
 
-`ui/NeonFace.kt` — главный composable отрисовки.
+`ui/NeonFace.kt` — главный composable.
 
-**Входные данные:**
-- `faceState: FaceState` — с камеры (ML Kit)
-- `isGreeting: Boolean` — режим радости при появлении человека
+**Входные параметры:**
 
-**Анимации (spring):**
-- Моргание — `leftEyeOpen`, `rightEyeOpen`
-- Улыбка — `smile` (от ML Kit + принудительный минимум при greeting)
-- Взгляд — `yaw`, `pitch` → смещение зрачков
-- Пульсация свечения — `infiniteTransition` (быстрее при greeting)
-- Bounce — `greetingBounce` при `isGreeting`
+```kotlin
+faceState: FaceState       // с камеры: взгляд, моргание, улыбка
+expression: FaceExpression // эмоция от LLM / реакций
+dialogPhase: DialogPhase   // фаза диалога
+isSpeaking: Boolean        // Jasper говорит
+lipPulse: Float            // от TTS onRangeStart
+```
+
+**Анимации:**
+
+| Эффект | Механизм |
+|--------|----------|
+| Смена эмоции | `animateFloatAsState` (spring) — рот, брови, глаза |
+| Idle-моргание | `LaunchedEffect`, random 3–7 с, двойное моргание |
+| Saccades | spring + idle drift по синусоиде |
+| Дыхание | `infiniteTransition`, scale 0.99 ↔ 1.02 |
+| Squash & stretch | при смене `expression` — squashX/Y через state |
+| Bounce | краткий scale-up при смене эмоции |
+| Пульс неона | `glowPulse`, скорость зависит от эмоции |
+| Lip sync | `mouthDrive` + `lipPulse` при `isSpeaking` |
+| Фазы диалога | смещение бровей и взгляда по `DialogPhase` |
+
+**Важно:** `Animatable.value` внутри `Canvas` не триггерит recomposition — использовать `mutableFloatStateOf` + `animateFloatAsState`.
+
+### FaceExpression
+
+`model/FaceExpression.kt` — 9 эмоций:
+
+`NEUTRAL`, `HAPPY`, `PLAYFUL`, `SAD`, `OFFENDED`, `SURPRISED`, `ANGRY`, `AFRAID`, `SLEEPY`
+
+Каждая задаёт:
+
+- `smileAmount` — форма рта (> 0 улыбка, < 0 грусть)
+- `eyeOpen` — открытость глаз (SLEEPY → 0.32, AFRAID → 1.08)
+- `browInnerLift`, `browOuterLift` — положение бровей
+- Базовый подъём бровей: `BROW_BASE_RAISE = -6f`
 
 ### Глаза
 
 - Форма: эллипс (неоновый контур)
 - Зрачок: заполненный круг с бликами
-- Моргание: при `openAmount < 0.15` — горизонтальная линия
-- Взгляд: зрачок смещается по `gazeX`, `gazeY` + компонент от `headYaw`
-- Idle (лицо не видно): глаза медленно «бродят» по синусоиде
+- Моргание пользователя: `faceState.leftEyeOpen` / `rightEyeOpen` с камеры
+- Idle-моргание Jasper: независимо, кроме `SLEEPY`
+- Взгляд: `yaw`, `pitch` → смещение зрачков + saccades + idle drift
+- При `DialogPhase.THINKING` — взгляд чуть вверх
+- При `DialogPhase.LISTENING` — брови приподняты
+
+### Брови
+
+- Дуги с `browInnerLift` / `browOuterLift` от `FaceExpression`
+- Дополнительное смещение от `DialogPhase`
+- Разные формы для angry (сведены), afraid (подняты), sleepy (опущены)
 
 ### Рот
 
-- Только **дуга улыбки** (`drawNeonSmile`) — quadratic bezier
-- Ширина и кривизна зависят от `smile` (0..1)
-- Анимация открытого рта при речи **отключена**
+- Форма от `expression.smileAmount` — quadratic bezier
+- При `isSpeaking` — открытый рот (lip sync):
+  - `lipPulse` от TTS `onRangeStart`
+  - fallback-осцилляция `mouthDrive`
+  - `speakOpen = max(mouthDrive, lipPulse)`
 
 ### FaceAnalyzer + FaceState
 
 `camera/FaceAnalyzer.kt` → `model/FaceState.kt`
 
-ML Kit Face Detection:
+ML Kit Face Detection (FAST, CLASSIFICATION_MODE_ALL):
+
 - `leftEyeOpenProbability`, `rightEyeOpenProbability` → моргание
-- `smilingProbability` → улыбка
+- `smilingProbability` → улыбка (для реакции Jasper, не для рта)
 - `headEulerAngleX/Y/Z` → pitch, yaw, roll
-- Yaw инвертируется для зеркального эффекта фронтальной камеры
+- Yaw инвертирован для фронтальной камеры
 
 Пороги моргания:
+
 - `< 0.25` — глаз закрыт
 - `0.25..0.45` — плавный переход
 - `> 0.45` — открыт
@@ -71,32 +120,60 @@ ML Kit Face Detection:
 
 `ui/FaceMirrorScreen.kt`
 
-- Оркестрация: камера + UI + речь
-- Камера невидима (только `ImageAnalysis`, без preview)
-- Радость при первом обнаружении лица: `isGreeting = true` на 2.5 с + звук
+- Оркестрация: камера + речь + диалог + эмоции
+- `maybeReactToSmile()` — улыбка >= 0.52, 6 кадров, cooldown 10 с
+- `handleUserPhrase()` — STT → LLM / стоп-команды
+- `respondWithVoice()` — TTS + смена `faceExpression`
+- `resetExpressionLater()` — возврат к NEUTRAL через 5 с
+
+---
 
 ## Слои на экране
 
-```
+```text
 ┌─────────────────────────────────────┐
 │  NeonFace (Canvas, чёрный фон)      │
-│    ◉ глаза  ⌢ улыбка               │
-├─────────────────────────────────────┤
-│  RecognizedWordsOverlay (текст)     │
+│    ◉ глаза  ‿ брови  ⌢ рот         │
+│                                     │
+│  (текстовый overlay убран)          │
 └─────────────────────────────────────┘
 ```
 
-## Что отключено
+При отсутствии разрешений — кнопка «Разрешить доступ» внизу.
 
-| Функция | Причина |
-|---|---|
-| `drawNeonSpeakingMouth` | Ложные срабатывания, слишком сильная реакция на речь |
-| Анимация губ при TTS | Упрощение; только улыбка остаётся |
+---
+
+## DialogPhase → визуал
+
+| Фаза | Визуальный эффект |
+|------|-------------------|
+| IDLE | Нейтральное лицо |
+| LISTENING | Брови чуть приподняты |
+| THINKING | Взгляд вверх, брови приподняты |
+| SPEAKING | Lip sync, эмоция от LLM |
+| INTERRUPTED | Краткий сброс, затем LISTENING |
+
+---
+
+## Реакция на улыбку
+
+Камера детектирует улыбку пользователя → Jasper отвечает голосом (HAPPY/PLAYFUL), без LLM.
+
+Пороги в `FaceMirrorScreen`:
+
+- `SMILE_THRESHOLD = 0.52`
+- `SMILE_HOLD_FRAMES = 6`
+- `SMILE_REACTION_COOLDOWN_MS = 10000`
+
+Не срабатывает во время THINKING / SPEAKING.
+
+---
 
 ## Возможные улучшения
 
-- Брови, реакция на удивление
+- Независимое движение левой/правой брови
 - Landmarks ML Kit для точнее губ
-- Реакция на наклон головы (roll) — сейчас почти не используется
+- Реакция на `roll` (наклон головы)
+- Rive / Lottie при усложнении анимаций
+- Particle-эффекты при сильных эмоциях
 - Настройка цветов / темы
-- Particle-эффекты при greeting
