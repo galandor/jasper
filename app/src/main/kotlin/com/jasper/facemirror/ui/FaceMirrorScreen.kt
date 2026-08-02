@@ -35,6 +35,7 @@ import com.jasper.facemirror.audio.JasperSoundPlayer
 import com.jasper.facemirror.audio.JasperVoiceSpeaker
 import com.jasper.facemirror.camera.FaceAnalyzer
 import com.jasper.facemirror.model.FaceState
+import com.jasper.facemirror.model.GreetingReply
 import com.jasper.facemirror.model.SpeechState
 import com.jasper.facemirror.speech.GreetingDetector
 import com.jasper.facemirror.speech.SpeechRecognizerEngine
@@ -102,7 +103,7 @@ fun FaceMirrorScreen() {
 
     val allPermissionsGranted = hasCameraPermission && hasMicPermission
 
-    fun respondToHello() {
+    fun respondToHello(reply: GreetingReply) {
         val now = System.currentTimeMillis()
         if (now - lastHelloResponseMs < HELLO_COOLDOWN_MS) return
         lastHelloResponseMs = now
@@ -110,7 +111,7 @@ fun FaceMirrorScreen() {
         speechEngine?.pauseListening()
         isReplying = true
         isGreeting = true
-        voiceSpeaker.speakHello {
+        voiceSpeaker.speakGreeting(reply) {
             isReplying = false
             isGreeting = false
             speechEngine?.resumeListening()
@@ -134,8 +135,8 @@ fun FaceMirrorScreen() {
                     val phrase = state.recognizedText
                     if (phrase.isNotBlank() && phrase != lastProcessedPhrase) {
                         lastProcessedPhrase = phrase
-                        if (GreetingDetector.isHello(phrase)) {
-                            respondToHello()
+                        GreetingDetector.match(phrase)?.let { reply ->
+                            respondToHello(reply)
                         }
                     }
                 },
