@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Jasper</string>
-    <string name="camera_permission_required">Нужен доступ к камере, чтобы лицо повторяло ваши движения</string>
+    <string name="camera_permission_required">Нужен доступ к камере и микрофону, чтобы Jasper видел и слышал вас</string>
     <string name="grant_permission">Разрешить камеру</string>
 </resources>

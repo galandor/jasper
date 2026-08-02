@@ -59,5 +59,7 @@ dependencies {
 
     implementation("com.google.mlkit:face-detection:16.1.7")
 
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

@@ -21,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -34,24 +35,27 @@ import kotlin.math.sin
 private val BackgroundBlack = Color(0xFF000000)
 private val NeonCyan = Color(0xFF00F0FF)
 private val NeonPink = Color(0xFFFF2DAA)
+private val NeonYellow = Color(0xFFFFEA00)
 
 @Composable
 fun NeonFace(
     faceState: FaceState,
+    isGreeting: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val leftEyeOpen by animateFloatAsState(
-        targetValue = faceState.leftEyeOpen,
+        targetValue = if (isGreeting) faceState.leftEyeOpen * 0.75f else faceState.leftEyeOpen,
         animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.65f),
         label = "leftEye",
     )
     val rightEyeOpen by animateFloatAsState(
-        targetValue = faceState.rightEyeOpen,
+        targetValue = if (isGreeting) faceState.rightEyeOpen * 0.75f else faceState.rightEyeOpen,
         animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.65f),
         label = "rightEye",
     )
+    val baseSmile = if (isGreeting) maxOf(faceState.smile, 0.85f) else faceState.smile
     val smile by animateFloatAsState(
-        targetValue = faceState.smile,
+        targetValue = baseSmile,
         animationSpec = spring(stiffness = Spring.StiffnessLow, dampingRatio = 0.7f),
         label = "smile",
     )
@@ -66,12 +70,21 @@ fun NeonFace(
         label = "pitch",
     )
 
+    val greetingBounce = remember { Animatable(1f) }
+    LaunchedEffect(isGreeting) {
+        if (isGreeting) {
+            greetingBounce.snapTo(1f)
+            greetingBounce.animateTo(1.12f, spring(stiffness = Spring.StiffnessMedium, dampingRatio = 0.45f))
+            greetingBounce.animateTo(1f, spring(stiffness = Spring.StiffnessLow, dampingRatio = 0.6f))
+        }
+    }
+
     val infiniteTransition = rememberInfiniteTransition(label = "neonPulse")
     val glowPulse by infiniteTransition.animateFloat(
-        initialValue = 0.85f,
+        initialValue = if (isGreeting) 0.95f else 0.85f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(2200, easing = FastOutSlowInEasing),
+            animation = tween(if (isGreeting) 600 else 2200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "glowPulse",
@@ -100,13 +113,14 @@ fun NeonFace(
         cos(idlePhase.value * 2f * Math.PI.toFloat()) * 0.12f
     }
 
+
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(BackgroundBlack),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val scale = size.height * 0.0016f
+            val scale = size.height * 0.0016f * greetingBounce.value
             val cx = size.width / 2f
             val cy = size.height * 0.44f
 
@@ -116,7 +130,8 @@ fun NeonFace(
             }) {
                 val eyeSpacing = size.width / scale * 0.22f
                 val eyeRadius = size.height / scale * 0.11f
-                val smileY = eyeRadius * 1.55f
+                val mouthY = eyeRadius * 1.55f
+                val mouthColor = if (isGreeting) NeonYellow else NeonPink
 
                 drawNeonEye(
                     center = Offset(-eyeSpacing / 2f, 0f),
@@ -141,9 +156,9 @@ fun NeonFace(
 
                 drawNeonSmile(
                     smile = smile,
-                    y = smileY,
+                    y = mouthY,
                     width = eyeSpacing * 0.85f,
-                    color = NeonPink,
+                    color = mouthColor,
                     glowIntensity = glowPulse,
                 )
             }
@@ -238,20 +253,20 @@ private fun DrawScope.drawNeonEllipse(
         drawOval(
             color = color.copy(alpha = alpha),
             topLeft = Offset(center.x - radiusX, center.y - radiusY),
-            size = androidx.compose.ui.geometry.Size(radiusX * 2f, radiusY * 2f),
+            size = Size(radiusX * 2f, radiusY * 2f),
             style = Stroke(width = width + coreWidth),
         )
     }
     drawOval(
         color = color,
         topLeft = Offset(center.x - radiusX, center.y - radiusY),
-        size = androidx.compose.ui.geometry.Size(radiusX * 2f, radiusY * 2f),
+        size = Size(radiusX * 2f, radiusY * 2f),
         style = Stroke(width = coreWidth),
     )
     drawOval(
         color = Color.White.copy(alpha = 0.55f * glowIntensity),
         topLeft = Offset(center.x - radiusX, center.y - radiusY),
-        size = androidx.compose.ui.geometry.Size(radiusX * 2f, radiusY * 2f),
+        size = Size(radiusX * 2f, radiusY * 2f),
         style = Stroke(width = coreWidth * 0.35f),
     )
 }
