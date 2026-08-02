@@ -48,7 +48,6 @@ import java.util.concurrent.Executors
 
 private const val REPLY_COOLDOWN_MS = 2500L
 private const val EXPRESSION_HOLD_MS = 5000L
-private const val BARGE_IN_MIN_AMPLITUDE = 0.18f
 
 @Composable
 fun FaceMirrorScreen() {
@@ -74,11 +73,18 @@ fun FaceMirrorScreen() {
     var dialogPhase by remember { mutableStateOf(DialogPhase.IDLE) }
     var isJasperSpeaking by remember { mutableStateOf(false) }
     var lastReplyMs by remember { mutableLongStateOf(0L) }
-    var lastProcessedPhrase by remember { mutableStateOf("") }
     var expressionResetJob by remember { mutableStateOf<Job?>(null) }
 
     val voiceSpeaker = remember { JasperVoiceSpeaker(context) }
     val conversationBrain = remember(scope) { ConversationBrain(scope) }
+    var speechEngine by remember { mutableStateOf<SpeechRecognizerEngine?>(null) }
+
+    DisposableEffect(voiceSpeaker) {
+        voiceSpeaker.setOnSpeakingChanged { speaking ->
+            isJasperSpeaking = speaking
+        }
+        onDispose { }
+    }
 
     DisposableEffect(Unit) {
         onDispose { voiceSpeaker.release() }
@@ -114,6 +120,7 @@ fun FaceMirrorScreen() {
         isJasperSpeaking = false
         dialogPhase = DialogPhase.INTERRUPTED
         lastReplyMs = 0L
+        speechEngine?.resumeListening()
 
         scope.launch {
             delay(400)
@@ -128,21 +135,30 @@ fun FaceMirrorScreen() {
         if (now - lastReplyMs < REPLY_COOLDOWN_MS && dialogPhase != DialogPhase.INTERRUPTED) return
         lastReplyMs = now
 
+        speechEngine?.pauseListening()
+
         faceExpression = reply.expression
         dialogPhase = DialogPhase.SPEAKING
-        isJasperSpeaking = true
         expressionResetJob?.cancel()
 
         voiceSpeaker.speakGreeting(reply) {
             isJasperSpeaking = false
             dialogPhase = DialogPhase.LISTENING
+            speechEngine?.resumeListening()
             resetExpressionLater()
         }
     }
 
     fun handleUserPhrase(phrase: String, history: List<String>) {
-        if (phrase.isBlank() || phrase == lastProcessedPhrase) return
-        lastProcessedPhrase = phrase
+        if (phrase.isBlank()) return
+
+        // Пока Jasper говорит — микрофон выключен; отбрасываем эхо, если оно просочилось
+        if (isJasperSpeaking || dialogPhase == DialogPhase.SPEAKING) {
+            speechEngine?.acknowledgePhrase()
+            return
+        }
+
+        speechEngine?.acknowledgePhrase()
 
         if (InterruptCommands.isStopCommand(phrase)) {
             interruptJasper()
@@ -150,9 +166,7 @@ fun FaceMirrorScreen() {
             return
         }
 
-        if (isJasperSpeaking) {
-            interruptJasper()
-        } else if (dialogPhase == DialogPhase.THINKING) {
+        if (dialogPhase == DialogPhase.THINKING) {
             conversationBrain.cancelPending()
             lastReplyMs = 0L
         }
@@ -161,22 +175,16 @@ fun FaceMirrorScreen() {
         conversationBrain.respondToPhrase(
             phrase = phrase,
             history = history,
-        ) { reply ->
-            if (dialogPhase == DialogPhase.INTERRUPTED) return@respondToPhrase
-            respondWithVoice(reply)
-        }
-    }
-
-    fun maybeBargeIn(state: SpeechState) {
-        if (!isJasperSpeaking && dialogPhase != DialogPhase.SPEAKING) return
-
-        val userTalking = state.isSpeaking &&
-            state.amplitude >= BARGE_IN_MIN_AMPLITUDE
-        val partialFromUser = state.partialText.length >= 2
-
-        if (userTalking || partialFromUser) {
-            interruptJasper()
-        }
+            onReply = { reply ->
+                if (dialogPhase == DialogPhase.INTERRUPTED) return@respondToPhrase
+                respondWithVoice(reply)
+            },
+            onNoReply = {
+                if (dialogPhase != DialogPhase.INTERRUPTED) {
+                    dialogPhase = DialogPhase.LISTENING
+                }
+            },
+        )
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -189,14 +197,14 @@ fun FaceMirrorScreen() {
         if (allPermissionsGranted) {
             CameraAnalyzer(onFaceState = { faceState = it })
             SpeechListener(
-                onEngineReady = {
+                onEngineReady = { engine ->
+                    speechEngine = engine
                     if (dialogPhase == DialogPhase.IDLE) {
                         dialogPhase = DialogPhase.LISTENING
                     }
                 },
                 onSpeechState = { state ->
                     speechState = state
-                    maybeBargeIn(state)
 
                     val phrase = state.recognizedText
                     if (phrase.isNotBlank()) {

@@ -13,8 +13,8 @@
 | # | Задача | Статус | Файлы |
 |---|--------|--------|-------|
 | A1 | `DialogPhase` — состояния IDLE / LISTENING / THINKING / SPEAKING / INTERRUPTED | ✅ | `model/DialogPhase.kt` |
-| A2 | Barge-in: STT не ставится на паузу во время TTS | ✅ | `FaceMirrorScreen.kt` |
-| A3 | При речи пользователя во время TTS → `stop()` + сброс | ✅ | `FaceMirrorScreen.kt` |
+| A2 | Barge-in: STT не ставится на паузу во время TTS | ⏸ отложено | эхо ловит свой голос |
+| A3 | При речи пользователя во время TTS → `stop()` + сброс | ⏸ отложено | нужен AEC или tap-to-interrupt |
 | A4 | Отмена LLM-запроса при новой фразе / перебивании | ✅ | `ConversationBrain.kt` |
 | A5 | Локальные стоп-команды: «стоп», «тихо», «подожди» | ✅ | `speech/InterruptCommands.kt` |
 | A6 | Убрать жёсткий cooldown после перебивания | ✅ | `FaceMirrorScreen.kt` |

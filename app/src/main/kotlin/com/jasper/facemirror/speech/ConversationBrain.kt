@@ -29,6 +29,7 @@ class ConversationBrain(
         phrase: String,
         history: List<String> = emptyList(),
         onReply: (GreetingReply) -> Unit,
+        onNoReply: () -> Unit = {},
     ) {
         cancelPending()
         activeJob = scope.launch {
@@ -39,8 +40,12 @@ class ConversationBrain(
                     local.match(phrase)
                 }
                 if (isActive) {
-                    reply?.let {
-                        withContext(Dispatchers.Main) { onReply(it) }
+                    withContext(Dispatchers.Main) {
+                        if (reply != null) {
+                            onReply(reply)
+                        } else {
+                            onNoReply()
+                        }
                     }
                 }
             } catch (_: CancellationException) {

@@ -48,12 +48,28 @@ class SpeechRecognizerEngine(
 
     fun pauseListening() {
         paused = true
-        mainHandler.post { speechRecognizer?.cancel() }
+        mainHandler.post {
+            speechRecognizer?.cancel()
+            updateState {
+                copy(
+                    partialText = "",
+                    isSpeaking = false,
+                    mouthOpen = 0f,
+                )
+            }
+        }
     }
 
     fun resumeListening() {
         paused = false
         if (shouldRun) scheduleRestart(250L)
+    }
+
+    /** Сбрасывает обработанную фразу, чтобы можно было сказать её снова. */
+    fun acknowledgePhrase() {
+        mainHandler.post {
+            updateState { copy(recognizedText = "", partialText = "") }
+        }
     }
 
     private fun startListening() {
