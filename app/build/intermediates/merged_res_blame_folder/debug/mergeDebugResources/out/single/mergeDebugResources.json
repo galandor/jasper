@@ -1,0 +1,14 @@
+[
+    {
+        "merged": "/home/orsevic/.gradle/daemon/8.9/com.jasper.facemirror.app-debug-60:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "/home/orsevic/.gradle/daemon/8.9/com.jasper.facemirror.app-main-62:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "/home/orsevic/.gradle/daemon/8.9/com.jasper.facemirror.app-debug-60:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "/home/orsevic/.gradle/daemon/8.9/com.jasper.facemirror.app-main-62:/drawable/ic_launcher_foreground.xml"
+    },
+    {
+        "merged": "com.jasper.facemirror.app-debug-60:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "com.jasper.facemirror.app-main-62:/drawable/ic_launcher_foreground.xml"
+    }
+]
