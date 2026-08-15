@@ -1,5 +1,8 @@
 package com.jasper.facemirror.speech
 
+import android.util.Log
+import com.jasper.facemirror.chassis.DriveAction
+import com.jasper.facemirror.chassis.DriveIntentClassifier
 import com.jasper.facemirror.model.GreetingReply
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -8,15 +11,17 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * LLM отвечает на любую фразу; без ключа — только локальные приветствия.
- * Предыдущий запрос отменяется при новой фразе или перебивании.
+ * Сначала крошечный классификатор команд машинки, потом обычный диалог.
+ * Классификатор не должен глушить разговор: при ошибке/таймауте идём в чат.
  */
 class ConversationBrain(
     private val scope: CoroutineScope,
     private val llm: LlmConversationResponder = LlmConversationResponder(),
     private val local: GreetingDetector = GreetingDetector,
+    private val driveClassifier: DriveIntentClassifier = DriveIntentClassifier(),
 ) {
     private var activeJob: Job? = null
 
@@ -28,12 +33,26 @@ class ConversationBrain(
     fun respondToPhrase(
         phrase: String,
         history: List<String> = emptyList(),
+        alternatives: List<String> = emptyList(),
+        onDrive: (DriveAction) -> Unit = {},
         onReply: (GreetingReply) -> Unit,
         onNoReply: () -> Unit = {},
     ) {
         cancelPending()
         activeJob = scope.launch {
             try {
+                val transcripts = (listOf(phrase) + alternatives).distinct()
+                if (driveClassifier.isAvailable) {
+                    val drive = withTimeoutOrNull(CLASSIFY_TIMEOUT_MS) {
+                        driveClassifier.classify(transcripts)
+                    }
+                    if (drive != null) {
+                        if (isActive) {
+                            withContext(Dispatchers.Main) { onDrive(drive) }
+                        }
+                        return@launch
+                    }
+                }
                 val reply = if (llm.isAvailable) {
                     llm.respond(phrase, history) ?: local.match(phrase)
                 } else {
@@ -48,9 +67,19 @@ class ConversationBrain(
                         }
                     }
                 }
-            } catch (_: CancellationException) {
-                // Новая фраза или перебивание — тихо отменяем
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "respondToPhrase failed: ${e.message}")
+                if (isActive) {
+                    withContext(Dispatchers.Main) { onNoReply() }
+                }
             }
         }
+    }
+
+    companion object {
+        private const val TAG = "JasperChassis"
+        private const val CLASSIFY_TIMEOUT_MS = 6_000L
     }
 }

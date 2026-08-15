@@ -5,6 +5,8 @@ data class SpeechState(
     val partialText: String = "",
     /** Последняя завершённая фраза */
     val recognizedText: String = "",
+    /** Варианты STT — «джаспер» часто приходит как «джазпер». */
+    val recognizedAlternatives: List<String> = emptyList(),
     /** Несколько последних фраз */
     val history: List<String> = emptyList(),
     val isListening: Boolean = false,

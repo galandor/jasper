@@ -1,0 +1,89 @@
+package com.jasper.facemirror.chassis
+
+import android.util.Log
+import com.jasper.facemirror.llm.GeminiClient
+import org.json.JSONObject
+
+/**
+ * Крошечный классификатор: команда машинке или обычный разговор.
+ * Ловит кривой STT («джазпер на лево»), который regex не берёт.
+ */
+class DriveIntentClassifier(
+    private val client: GeminiClient = GeminiClient(),
+) {
+    val isAvailable: Boolean get() = client.isConfigured
+
+    suspend fun classify(transcripts: List<String>): DriveAction? {
+        if (!isAvailable) return null
+        val unique = transcripts.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (unique.isEmpty()) return null
+
+        val raw = client.generate(
+            prompt = buildPrompt(unique),
+            temperature = 0.1,
+            maxOutputTokens = 256,
+            timeoutMs = 5_000,
+            firstModelOnly = true,
+        ) ?: return null
+
+        val action = parseCmd(raw)
+        Log.i(TAG, "classify $unique → $action raw=${raw.take(80)}")
+        return action
+    }
+
+    private fun parseCmd(raw: String): DriveAction? {
+        return try {
+            val cleaned = raw.trim()
+                .removePrefix("```json")
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
+            val jsonStart = cleaned.indexOf('{')
+            val jsonEnd = cleaned.lastIndexOf('}')
+            val jsonText = if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                cleaned.substring(jsonStart, jsonEnd + 1)
+            } else {
+                cleaned
+            }
+            val json = JSONObject(jsonText)
+            when (json.optString("cmd").lowercase().trim()) {
+                "forward" -> DriveAction.FORWARD
+                "back", "backward" -> DriveAction.BACKWARD
+                "left" -> DriveAction.ROTATE_LEFT
+                "right" -> DriveAction.ROTATE_RIGHT
+                "strafe_left" -> DriveAction.STRAFE_LEFT
+                "strafe_right" -> DriveAction.STRAFE_RIGHT
+                "follow" -> DriveAction.FOLLOW
+                "wander" -> DriveAction.WANDER
+                "stop" -> DriveAction.STOP
+                else -> null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "bad classifier JSON: ${raw.take(120)}", e)
+            null
+        }
+    }
+
+    private fun buildPrompt(transcripts: List<String>): String {
+        val lines = transcripts.joinToString("\n") { "- \"$it\"" }
+        return """
+            Voice control for a small robot car named Jasper (Джаспер).
+            STT is noisy: name often comes as джазпер, джеспер, jasper, джаспер.
+            Commands may be split: "на лево", "в перед", "на право".
+
+            If the user is ADDRESSING Jasper and telling the car to move, pick a command.
+            If it's greeting/chat/unrelated, or Jasper is not being addressed, cmd=none.
+            If ambiguous but it looks like a named move command, pick the command.
+
+            Same utterance, alternative transcripts:
+            $lines
+
+            JSON only:
+            {"cmd":"forward|back|left|right|strafe_left|strafe_right|follow|wander|stop|none"}
+        """.trimIndent()
+    }
+
+    companion object {
+        private const val TAG = "JasperChassis"
+    }
+}

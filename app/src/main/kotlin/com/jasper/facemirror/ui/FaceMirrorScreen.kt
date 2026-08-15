@@ -1,7 +1,10 @@
 package com.jasper.facemirror.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
+import android.util.Log
 import android.util.Size as AndroidSize
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -35,12 +38,16 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.jasper.facemirror.R
 import com.jasper.facemirror.audio.JasperVoiceSpeaker
 import com.jasper.facemirror.camera.FaceAnalyzer
+import com.jasper.facemirror.chassis.ChassisDriver
+import com.jasper.facemirror.chassis.DriveAction
+import com.jasper.facemirror.chassis.DriveCommands
 import com.jasper.facemirror.model.DialogPhase
 import com.jasper.facemirror.model.FaceExpression
 import com.jasper.facemirror.model.FaceGestureReactions
 import com.jasper.facemirror.model.FaceState
 import com.jasper.facemirror.model.GreetingReply
 import com.jasper.facemirror.model.SpeechState
+import com.jasper.facemirror.model.VoiceEmotion
 import com.jasper.facemirror.speech.ConversationBrain
 import com.jasper.facemirror.speech.InterruptCommands
 import com.jasper.facemirror.speech.SpeechRecognizerEngine
@@ -72,6 +79,9 @@ fun FaceMirrorScreen() {
                 PackageManager.PERMISSION_GRANTED,
         )
     }
+    var hasBluetoothPermission by remember {
+        mutableStateOf(hasBluetoothConnectPermission(context))
+    }
 
     var faceState by remember { mutableStateOf(FaceState.Idle) }
     var speechState by remember { mutableStateOf(SpeechState.Idle) }
@@ -86,6 +96,7 @@ fun FaceMirrorScreen() {
 
     val voiceSpeaker = remember { JasperVoiceSpeaker(context) }
     val conversationBrain = remember(scope) { ConversationBrain(scope) }
+    val chassisDriver = remember { ChassisDriver(context, scope) }
     var speechEngine by remember { mutableStateOf<SpeechRecognizerEngine?>(null) }
 
     DisposableEffect(voiceSpeaker) {
@@ -101,11 +112,19 @@ fun FaceMirrorScreen() {
         onDispose { voiceSpeaker.release() }
     }
 
+    DisposableEffect(hasBluetoothPermission) {
+        if (hasBluetoothPermission) {
+            chassisDriver.start()
+        }
+        onDispose { chassisDriver.release() }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
     ) { permissions ->
         hasCameraPermission = permissions[Manifest.permission.CAMERA] == true
         hasMicPermission = permissions[Manifest.permission.RECORD_AUDIO] == true
+        hasBluetoothPermission = hasBluetoothConnectPermission(context)
     }
 
     val allPermissionsGranted = hasCameraPermission && hasMicPermission
@@ -198,8 +217,49 @@ fun FaceMirrorScreen() {
         respondWithVoice(FaceGestureReactions.smileReply(), ignoreCooldown = true)
     }
 
-    fun handleUserPhrase(phrase: String, history: List<String>) {
+    fun applyDrive(drive: DriveAction) {
+        conversationBrain.cancelPending()
+        if (isJasperSpeaking || dialogPhase == DialogPhase.SPEAKING || dialogPhase == DialogPhase.THINKING) {
+            voiceSpeaker.stop()
+            isJasperSpeaking = false
+        }
+        chassisDriver.execute(drive)
+        if (drive == DriveAction.STOP) {
+            interruptJasper()
+            faceExpression = FaceExpression.NEUTRAL
+            dialogPhase = DialogPhase.LISTENING
+            return
+        }
+        if (chassisDriver.connectFinished && !chassisDriver.isConnected) {
+            respondWithVoice(
+                GreetingReply("Машинка не слышит!", VoiceEmotion.SAD, FaceExpression.SAD),
+                ignoreCooldown = true,
+            )
+            return
+        }
+        faceExpression = drive.ack?.expression ?: FaceExpression.PLAYFUL
+        dialogPhase = DialogPhase.LISTENING
+        resetExpressionLater()
+    }
+
+    fun handleUserPhrase(phrase: String, history: List<String>, alternatives: List<String> = emptyList()) {
         if (phrase.isBlank()) return
+
+        val candidates = (listOf(phrase) + alternatives).distinct()
+        val drive = DriveCommands.parseAny(candidates)
+        Log.i("JasperChassis", "STT='$phrase' alts=$alternatives drive=$drive")
+
+        if (drive != null) {
+            speechEngine?.acknowledgePhrase()
+            applyDrive(drive)
+            return
+        }
+
+        if (chassisDriver.isDriving && candidates.any { DriveCommands.containsStopWord(it) }) {
+            speechEngine?.acknowledgePhrase()
+            applyDrive(DriveAction.STOP)
+            return
+        }
 
         // Пока Jasper говорит — микрофон выключен; отбрасываем эхо, если оно просочилось
         if (isJasperSpeaking || dialogPhase == DialogPhase.SPEAKING) {
@@ -211,6 +271,7 @@ fun FaceMirrorScreen() {
 
         if (InterruptCommands.isStopCommand(phrase)) {
             interruptJasper()
+            chassisDriver.stop()
             faceExpression = FaceExpression.NEUTRAL
             return
         }
@@ -224,6 +285,11 @@ fun FaceMirrorScreen() {
         conversationBrain.respondToPhrase(
             phrase = phrase,
             history = history,
+            alternatives = alternatives,
+            onDrive = { action ->
+                if (dialogPhase == DialogPhase.INTERRUPTED) return@respondToPhrase
+                applyDrive(action)
+            },
             onReply = { reply ->
                 if (dialogPhase == DialogPhase.INTERRUPTED) return@respondToPhrase
                 respondWithVoice(reply)
@@ -260,9 +326,16 @@ fun FaceMirrorScreen() {
                 onSpeechState = { state ->
                     speechState = state
 
+                    if (chassisDriver.isDriving && DriveCommands.containsStopWord(state.partialText)) {
+                        chassisDriver.stop()
+                        interruptJasper()
+                        faceExpression = FaceExpression.NEUTRAL
+                        dialogPhase = DialogPhase.LISTENING
+                    }
+
                     val phrase = state.recognizedText
                     if (phrase.isNotBlank()) {
-                        handleUserPhrase(phrase, state.history)
+                        handleUserPhrase(phrase, state.history, state.recognizedAlternatives)
                     }
                 },
             )
@@ -270,12 +343,7 @@ fun FaceMirrorScreen() {
             dialogPhase = DialogPhase.IDLE
             PermissionPrompt(
                 onRequestPermission = {
-                    permissionLauncher.launch(
-                        arrayOf(
-                            Manifest.permission.CAMERA,
-                            Manifest.permission.RECORD_AUDIO,
-                        ),
-                    )
+                    permissionLauncher.launch(requiredAppPermissions())
                 },
             )
         }
@@ -369,3 +437,20 @@ private fun SpeechListener(
         onDispose { engine.stop() }
     }
 }
+
+private fun hasBluetoothConnectPermission(context: Context): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+    return ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.BLUETOOTH_CONNECT,
+    ) == PackageManager.PERMISSION_GRANTED
+}
+
+private fun requiredAppPermissions(): Array<String> = buildList {
+    add(Manifest.permission.CAMERA)
+    add(Manifest.permission.RECORD_AUDIO)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        add(Manifest.permission.BLUETOOTH_CONNECT)
+    }
+}.toTypedArray()
+

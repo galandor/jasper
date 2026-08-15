@@ -67,8 +67,13 @@ class SpeechRecognizerEngine(
 
     /** Сбрасывает обработанную фразу, чтобы можно было сказать её снова. */
     fun acknowledgePhrase() {
-        mainHandler.post {
-            updateState { copy(recognizedText = "", partialText = "") }
+        val clear = {
+            updateState { copy(recognizedText = "", partialText = "", recognizedAlternatives = emptyList()) }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            clear()
+        } else {
+            mainHandler.post(clear)
         }
     }
 
@@ -131,24 +136,25 @@ class SpeechRecognizerEngine(
     }
 
     override fun onResults(results: Bundle?) {
-        val text = results
+        val all = results
             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            ?.firstOrNull()
-            ?.trim()
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
             .orEmpty()
 
-        if (text.isNotEmpty()) {
+        if (all.isNotEmpty()) {
             updateState {
                 copy(
-                    recognizedText = text,
+                    recognizedText = all.first(),
+                    recognizedAlternatives = all,
                     partialText = "",
-                    history = (history + text).takeLast(5),
+                    history = (history + all.first()).takeLast(5),
                     isSpeaking = false,
                     mouthOpen = 0f,
                 )
             }
         } else {
-            updateState { copy(partialText = "", isSpeaking = false, mouthOpen = 0f) }
+            updateState { copy(partialText = "", recognizedAlternatives = emptyList(), isSpeaking = false, mouthOpen = 0f) }
         }
         scheduleRestart()
     }
