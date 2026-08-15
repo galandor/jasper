@@ -46,6 +46,9 @@ private val NeonPink = Color(0xFFFF2DAA)
 private val NeonYellow = Color(0xFFFFEA00)
 private val NeonPurple = Color(0xFFB388FF)
 private val NeonOrange = Color(0xFFFF5722)
+private val EyeBlockBlue = Color(0xFF1565FF)
+private val EyeBlockHighlight = Color(0xFF64B5FF)
+private val EyeFrameColor = Color(0xFFE3F2FD)
 private const val BROW_BASE_RAISE = -6f
 
 @Composable
@@ -316,15 +319,15 @@ fun NeonFace(
                     pivot = Offset.Zero,
                 )
             }) {
-                val eyeSpacing = size.width / baseScale * 0.22f
-                val eyeRadius = size.height / baseScale * 0.11f
-                val mouthY = eyeRadius * 1.55f
+                val eyeSpacing = size.width / baseScale * 0.30f
+                val eyeSize = size.height / baseScale * 0.17f
+                val mouthY = eyeSize * 1.65f
                 val leftEye = Offset(-eyeSpacing / 2f, 0f)
                 val rightEye = Offset(eyeSpacing / 2f, 0f)
 
                 drawNeonEyebrow(
                     eyeCenter = leftEye,
-                    eyeRadius = eyeRadius,
+                    eyeRadius = eyeSize,
                     innerLift = browInner,
                     outerLift = browOuter,
                     color = accentColor,
@@ -333,7 +336,7 @@ fun NeonFace(
                 )
                 drawNeonEyebrow(
                     eyeCenter = rightEye,
-                    eyeRadius = eyeRadius,
+                    eyeRadius = eyeSize,
                     innerLift = browInner,
                     outerLift = browOuter,
                     color = accentColor,
@@ -342,26 +345,28 @@ fun NeonFace(
                 )
 
                 val eyeStretch = eyeStretchX * blinkSquash
-                drawNeonEye(
+                drawBlockEye(
                     center = leftEye,
-                    radius = eyeRadius,
+                    baseSize = eyeSize,
                     openAmount = effectiveEyeOpen,
                     stretchX = eyeStretch,
                     gazeX = gazeX,
                     gazeY = gazeY,
                     headYaw = yaw,
-                    color = NeonCyan,
+                    expression = expression,
+                    isLeftEye = true,
                     glowIntensity = glowPulse,
                 )
-                drawNeonEye(
+                drawBlockEye(
                     center = rightEye,
-                    radius = eyeRadius,
+                    baseSize = eyeSize,
                     openAmount = effectiveEyeOpen,
                     stretchX = eyeStretch,
                     gazeX = gazeX,
                     gazeY = gazeY,
                     headYaw = yaw,
-                    color = NeonCyan,
+                    expression = expression,
+                    isLeftEye = false,
                     glowIntensity = glowPulse,
                 )
 
@@ -369,7 +374,7 @@ fun NeonFace(
                     smile = smile,
                     speakOpen = speakOpen,
                     y = mouthY,
-                    width = eyeSpacing * 0.85f,
+                    width = eyeSpacing * 0.9f,
                     color = accentColor,
                     glowIntensity = glowPulse,
                     surprised = expression == FaceExpression.SURPRISED,
@@ -422,45 +427,124 @@ private fun DrawScope.drawNeonEyebrow(
     drawNeonPath(path, color, 3.8f, glowIntensity)
 }
 
-private fun DrawScope.drawNeonEye(
+/** Асимметричное сужение рамки: (внутренний край, внешний край), 0..1 */
+private fun blockEyeSquish(expression: FaceExpression, isLeftEye: Boolean): Pair<Float, Float> {
+    val (inner, outer) = when (expression) {
+        FaceExpression.ANGRY -> 0.38f to 0.06f
+        FaceExpression.SAD -> 0.08f to 0.34f
+        FaceExpression.OFFENDED -> 0.12f to 0.28f
+        FaceExpression.HAPPY, FaceExpression.PLAYFUL -> 0.14f to 0.14f
+        FaceExpression.AFRAID, FaceExpression.SURPRISED -> 0f to 0f
+        FaceExpression.SLEEPY -> 0.22f to 0.22f
+        else -> 0.05f to 0.05f
+    }
+    return if (isLeftEye) inner to outer else outer to inner
+}
+
+private fun DrawScope.drawBlockEye(
     center: Offset,
-    radius: Float,
+    baseSize: Float,
     openAmount: Float,
     stretchX: Float,
     gazeX: Float,
     gazeY: Float,
     headYaw: Float,
-    color: Color,
+    expression: FaceExpression,
+    isLeftEye: Boolean,
     glowIntensity: Float,
 ) {
-    val squish = openAmount.coerceIn(0.05f, 1.15f)
-    val rx = radius * stretchX * if (openAmount > 1f) openAmount else 1f
-    val ry = radius * squish
+    val squish = openAmount.coerceIn(0.06f, 1.15f)
+    val (innerSquish, outerSquish) = blockEyeSquish(expression, isLeftEye)
 
-    drawNeonEllipse(
-        center = center,
-        radiusX = rx,
-        radiusY = ry,
-        color = color,
-        coreWidth = 4.5f,
-        glowIntensity = glowIntensity,
+    val frameW = baseSize * 2.05f * stretchX * if (openAmount > 1f) openAmount else 1f
+    val frameH = baseSize * 2.35f * squish
+
+    val innerInset = innerSquish * frameW * 0.42f
+    val outerInset = outerSquish * frameW * 0.42f
+
+    val left: Float
+    val right: Float
+    if (isLeftEye) {
+        left = center.x - frameW / 2f + outerInset
+        right = center.x + frameW / 2f - innerInset
+    } else {
+        left = center.x - frameW / 2f + innerInset
+        right = center.x + frameW / 2f - outerInset
+    }
+    val top = center.y - frameH / 2f
+    val bottom = center.y + frameH / 2f
+    val frameWidth = right - left
+    val frameHeight = bottom - top
+
+    if (squish < 0.18f) {
+        drawRect(
+            color = EyeBlockBlue,
+            topLeft = Offset(left, center.y - baseSize * 0.06f),
+            size = Size(frameWidth, baseSize * 0.12f),
+        )
+        drawRect(
+            color = EyeFrameColor,
+            topLeft = Offset(left, center.y - baseSize * 0.06f),
+            size = Size(frameWidth, baseSize * 0.12f),
+            style = Stroke(width = baseSize * 0.1f),
+        )
+        return
+    }
+
+    val frameStroke = baseSize * 0.11f
+    val glowExpand = baseSize * 0.14f * glowIntensity
+    drawRect(
+        color = EyeBlockBlue.copy(alpha = 0.12f * glowIntensity),
+        topLeft = Offset(left - glowExpand, top - glowExpand),
+        size = Size(frameWidth + glowExpand * 2f, frameHeight + glowExpand * 2f),
+    )
+    drawRect(
+        color = EyeFrameColor,
+        topLeft = Offset(left, top),
+        size = Size(frameWidth, frameHeight),
+        style = Stroke(width = frameStroke),
+    )
+    drawRect(
+        color = EyeFrameColor.copy(alpha = 0.35f),
+        topLeft = Offset(left + frameStroke * 0.4f, top + frameStroke * 0.4f),
+        size = Size(frameWidth - frameStroke * 0.8f, frameHeight - frameStroke * 0.8f),
+        style = Stroke(width = frameStroke * 0.35f),
     )
 
-    if (openAmount < 0.35f) return
+    val padding = baseSize * 0.16f
+    val innerLeft = left + padding
+    val innerTop = top + padding
+    val innerWidth = frameWidth - padding * 2f
+    val innerHeight = frameHeight - padding * 2f
 
-    val maxOffsetX = rx * 0.42f
-    val maxOffsetY = ry * 0.42f
-    val pupilCenter = Offset(
-        center.x + gazeX * maxOffsetX + (headYaw / 35f) * maxOffsetX * 0.35f,
-        center.y + gazeY * maxOffsetY,
+    val blockW = innerWidth * 0.68f
+    val blockH = innerHeight * 0.68f * squish.coerceAtMost(1f)
+    val travelX = innerWidth * 0.26f
+    val travelY = innerHeight * 0.26f
+    val blockCenterX = innerLeft + innerWidth / 2f +
+        gazeX * travelX + (headYaw / 35f) * travelX * 0.4f
+    val blockCenterY = innerTop + innerHeight / 2f + gazeY * travelY
+
+    val blockLeft = blockCenterX - blockW / 2f
+    val blockTop = blockCenterY - blockH / 2f
+
+    drawRect(
+        color = EyeBlockBlue,
+        topLeft = Offset(blockLeft, blockTop),
+        size = Size(blockW, blockH),
     )
-    val pupilRadius = radius * 0.18f * squish.coerceAtMost(1f)
-
-    drawNeonFilledCircle(
-        center = pupilCenter,
-        radius = pupilRadius,
-        color = color,
-        glowIntensity = glowIntensity,
+    val highlightW = blockW * 0.28f
+    val highlightH = blockH * 0.22f
+    drawRect(
+        color = EyeBlockHighlight.copy(alpha = 0.55f),
+        topLeft = Offset(blockLeft + blockW * 0.08f, blockTop + blockH * 0.1f),
+        size = Size(highlightW, highlightH),
+    )
+    drawRect(
+        color = Color.White.copy(alpha = 0.2f),
+        topLeft = Offset(blockLeft, blockTop),
+        size = Size(blockW, blockH),
+        style = Stroke(width = baseSize * 0.04f),
     )
 }
 
@@ -583,28 +667,6 @@ private fun DrawScope.drawNeonEllipse(
         topLeft = Offset(center.x - radiusX, center.y - radiusY),
         size = Size(radiusX * 2f, radiusY * 2f),
         style = Stroke(width = coreWidth * 0.35f),
-    )
-}
-
-private fun DrawScope.drawNeonFilledCircle(
-    center: Offset,
-    radius: Float,
-    color: Color,
-    glowIntensity: Float,
-) {
-    val layers = glowLayers(glowIntensity, filled = true)
-    for ((expand, alpha) in layers) {
-        drawCircle(
-            color = color.copy(alpha = alpha * 0.6f),
-            radius = radius + expand,
-            center = center,
-        )
-    }
-    drawCircle(color = color, radius = radius, center = center)
-    drawCircle(
-        color = Color.White.copy(alpha = 0.75f * glowIntensity),
-        radius = radius * 0.35f,
-        center = center + Offset(-radius * 0.25f, -radius * 0.25f),
     )
 }
 
