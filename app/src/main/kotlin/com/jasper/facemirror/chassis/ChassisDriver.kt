@@ -15,6 +15,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
@@ -53,7 +54,25 @@ class ChassisDriver(
         }
     }
 
+    suspend fun reconnect(): Boolean {
+        connectJob?.cancel()
+        connectJob = null
+        connectFinished = false
+        isConnected = false
+        runCatching { socket?.close() }
+        socket = null
+        withContext(Dispatchers.IO) {
+            connectLocked()
+        }
+        return isConnected
+    }
+
     fun execute(action: DriveAction) {
+        if (action == DriveAction.CONNECT) {
+            start()
+            return
+        }
+
         if (!isConnected && connectFinished) {
             start()
         }

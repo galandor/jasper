@@ -223,6 +223,26 @@ fun FaceMirrorScreen() {
             voiceSpeaker.stop()
             isJasperSpeaking = false
         }
+        if (drive == DriveAction.CONNECT) {
+            dialogPhase = DialogPhase.THINKING
+            faceExpression = FaceExpression.SURPRISED
+            scope.launch {
+                val ok = chassisDriver.reconnect()
+                if (dialogPhase == DialogPhase.INTERRUPTED) return@launch
+                if (ok) {
+                    respondWithVoice(
+                        GreetingReply("Подключился!", VoiceEmotion.HAPPY, FaceExpression.HAPPY),
+                        ignoreCooldown = true,
+                    )
+                } else {
+                    respondWithVoice(
+                        GreetingReply("Машинка не слышит!", VoiceEmotion.SAD, FaceExpression.SAD),
+                        ignoreCooldown = true,
+                    )
+                }
+            }
+            return
+        }
         chassisDriver.execute(drive)
         if (drive == DriveAction.STOP) {
             interruptJasper()

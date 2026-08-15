@@ -56,6 +56,7 @@ class DriveIntentClassifier(
                 "follow" -> DriveAction.FOLLOW
                 "wander" -> DriveAction.WANDER
                 "stop" -> DriveAction.STOP
+                "connect" -> DriveAction.CONNECT
                 else -> null
             }
         } catch (e: Exception) {
@@ -71,15 +72,16 @@ class DriveIntentClassifier(
             STT is noisy: name often comes as джазпер, джеспер, jasper, джаспер.
             Commands may be split: "на лево", "в перед", "на право".
 
-            If the user is ADDRESSING Jasper and telling the car to move, pick a command.
+            If the user is ADDRESSING Jasper and telling the car to move or to reconnect Bluetooth, pick a command.
             If it's greeting/chat/unrelated, or Jasper is not being addressed, cmd=none.
             If ambiguous but it looks like a named move command, pick the command.
+            "подключись к машинке" / reconnect / bluetooth → connect.
 
             Same utterance, alternative transcripts:
             $lines
 
             JSON only:
-            {"cmd":"forward|back|left|right|strafe_left|strafe_right|follow|wander|stop|none"}
+            {"cmd":"forward|back|left|right|strafe_left|strafe_right|follow|wander|stop|connect|none"}
         """.trimIndent()
     }
 

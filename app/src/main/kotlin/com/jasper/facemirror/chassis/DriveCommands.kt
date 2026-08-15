@@ -23,6 +23,7 @@ enum class DriveAction(
     FOLLOW('W', hold = false, holdMs = 0, ack = GreetingReply("Бегу за тобой!", VoiceEmotion.HAPPY, FaceExpression.HAPPY)),
     WANDER('T', hold = false, holdMs = 0, ack = GreetingReply("Погуляю!", VoiceEmotion.PLAYFUL, FaceExpression.PLAYFUL)),
     STOP('S', hold = false, holdMs = 0, ack = null),
+    CONNECT(' ', hold = false, holdMs = 0, ack = null),
 }
 
 /**
@@ -35,11 +36,12 @@ object DriveCommands {
     private val motorStopWord = Regex("""(^|\s)(стоп|стой|остановись|тормоз)(\s|$)""")
 
     private val motionHint = Regex(
-        """лев|прав|перед|еха|езж|зад|стоп|стой|тормоз|бок|гуля|след|пойд|повор|крут|развер""",
+        """лев|прав|перед|еха|езж|зад|стоп|стой|тормоз|бок|гуля|след|пойд|повор|крут|развер|подключ|соедини|машин|блютуз""",
     )
 
     private val rules = listOf(
         Regex("""(стоп|стой|остановись|тормоз)""") to DriveAction.STOP,
+        Regex("""(подключ\w*|переподключ\w*|соедини\w*|коннект|блютуз)""") to DriveAction.CONNECT,
         Regex("""(за\s*мной|следуй|подойди)""") to DriveAction.FOLLOW,
         Regex("""(погуляй|гуляй|объезжай|сам(\s+езди|\s+поезжай)?)""") to DriveAction.WANDER,
         Regex("""(назад)""") to DriveAction.BACKWARD,
