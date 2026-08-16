@@ -21,9 +21,10 @@
 `speech/SpeechRecognizerEngine.kt`
 
 - Обёртка над Android `SpeechRecognizer`
+- Предпочитает Google Speech Services (`GoogleRecognitionService`), не MIUI
 - Непрерывное прослушивание: после `onResults` / `onError` перезапуск через `scheduleRestart`
 - Язык: `ru-RU`, partial results включены
-- `onRmsChanged` — амплитуда в `SpeechState` (UI не использует)
+- `onRmsChanged` — только peak RMS в логах, UI не обновляется
 
 **Пауза при TTS:**
 
@@ -38,9 +39,11 @@ acknowledgePhrase() // сброс recognizedText после обработки
 `speech/ConversationBrain.kt`
 
 - Оркестратор ответа на фразу
+- Классификатор команд (`classifyDrive`) — только если regex не взял, но фраза похожа на руление
+- Только имя («Джаспер») — без Gemini, ждём команду
 - Если Gemini настроен → `LlmConversationResponder`, иначе → `GreetingDetector`
 - `cancelPending()` — отмена предыдущего LLM-запроса при новой фразе или прерывании
-- Callbacks: `onReply(GreetingReply)` / `onNoReply()`
+- Callbacks: `onReply(GreetingReply)` / `onNoReply()` / `onDrive(DriveAction)`
 
 ### LlmConversationResponder
 

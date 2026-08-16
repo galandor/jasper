@@ -2,6 +2,7 @@ package com.jasper.facemirror.llm
 
 import android.util.Log
 import com.jasper.facemirror.BuildConfig
+import com.jasper.facemirror.debug.JasperTiming
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -66,6 +67,7 @@ class GeminiClient(
             })
         }
 
+        val startedAt = JasperTiming.now()
         try {
             connection.outputStream.bufferedWriter().use { it.write(body.toString()) }
             val code = connection.responseCode
@@ -73,19 +75,36 @@ class GeminiClient(
             val responseText = stream.bufferedReader().use(BufferedReader::readText)
 
             if (code !in 200..299) {
+                JasperTiming.elapsed("Gemini $model", startedAt, "HTTP $code ${responseText.take(120)}")
                 Log.w(TAG, "Gemini $model failed: HTTP $code — ${responseText.take(200)}")
                 return null
             }
 
-            val candidates = JSONObject(responseText).optJSONArray("candidates") ?: return null
-            val first = candidates.optJSONObject(0) ?: return null
-            val parts = first.optJSONObject("content")?.optJSONArray("parts") ?: return null
+            val candidates = JSONObject(responseText).optJSONArray("candidates")
+            if (candidates == null) {
+                JasperTiming.elapsed("Gemini $model", startedAt, "HTTP $code нет candidates")
+                return null
+            }
+            val first = candidates.optJSONObject(0)
+            if (first == null) {
+                JasperTiming.elapsed("Gemini $model", startedAt, "HTTP $code пустой candidate")
+                return null
+            }
+            val parts = first.optJSONObject("content")?.optJSONArray("parts")
+            if (parts == null) {
+                JasperTiming.elapsed("Gemini $model", startedAt, "HTTP $code нет parts")
+                return null
+            }
             val text = extractText(parts)
             if (text != null) {
+                JasperTiming.elapsed("Gemini $model", startedAt, "HTTP $code chars=${text.length}")
                 Log.d(TAG, "Gemini response from $model: ${text.take(120)}")
+            } else {
+                JasperTiming.elapsed("Gemini $model", startedAt, "HTTP $code пустой ответ")
             }
             return text
         } catch (e: Exception) {
+            JasperTiming.elapsed("Gemini $model", startedAt, "ошибка ${e.javaClass.simpleName}: ${e.message}")
             Log.w(TAG, "Gemini $model error: ${e.message}")
             return null
         } finally {

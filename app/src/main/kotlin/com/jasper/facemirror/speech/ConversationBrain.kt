@@ -3,6 +3,7 @@ package com.jasper.facemirror.speech
 import android.util.Log
 import com.jasper.facemirror.chassis.DriveAction
 import com.jasper.facemirror.chassis.DriveIntentClassifier
+import com.jasper.facemirror.debug.JasperTiming
 import com.jasper.facemirror.model.GreetingReply
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -14,8 +15,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Сначала крошечный классификатор команд машинки, потом обычный диалог.
- * Классификатор не должен глушить разговор: при ошибке/таймауте идём в чат.
+ * Сначала классификатор команд машинки (только если фраза похожа на руление),
+ * потом обычный диалог. Классификатор не должен глушить разговор:
+ * при ошибке/таймауте идём в чат.
  */
 class ConversationBrain(
     private val scope: CoroutineScope,
@@ -34,30 +36,68 @@ class ConversationBrain(
         phrase: String,
         history: List<String> = emptyList(),
         alternatives: List<String> = emptyList(),
+        classifyDrive: Boolean = true,
         onDrive: (DriveAction) -> Unit = {},
         onReply: (GreetingReply) -> Unit,
         onNoReply: () -> Unit = {},
     ) {
         cancelPending()
         activeJob = scope.launch {
+            val brainStartedAt = JasperTiming.now()
             try {
                 val transcripts = (listOf(phrase) + alternatives).distinct()
-                if (driveClassifier.isAvailable) {
+                JasperTiming.event(
+                    "мозг старт",
+                    "phrase='$phrase' alts=$alternatives llm=${llm.isAvailable} " +
+                        "classifier=${driveClassifier.isAvailable} classifyDrive=$classifyDrive",
+                )
+                if (classifyDrive && driveClassifier.isAvailable) {
+                    val classifyStartedAt = JasperTiming.now()
+                    var timedOut = true
                     val drive = withTimeoutOrNull(CLASSIFY_TIMEOUT_MS) {
-                        driveClassifier.classify(transcripts)
+                        val result = driveClassifier.classify(transcripts)
+                        timedOut = false
+                        result
+                    }
+                    if (timedOut) {
+                        JasperTiming.elapsed(
+                            "мозг классификатор",
+                            classifyStartedAt,
+                            "ТАЙМАУТ ${CLASSIFY_TIMEOUT_MS}мс",
+                        )
+                    } else {
+                        JasperTiming.elapsed(
+                            "мозг классификатор",
+                            classifyStartedAt,
+                            "результат=$drive",
+                        )
                     }
                     if (drive != null) {
+                        JasperTiming.elapsed("мозг итог", brainStartedAt, "путь=gemini_drive команда=$drive")
                         if (isActive) {
                             withContext(Dispatchers.Main) { onDrive(drive) }
                         }
                         return@launch
                     }
+                } else if (!classifyDrive) {
+                    JasperTiming.event("мозг классификатор", "пропущен — не похоже на руление")
                 }
+                val chatStartedAt = JasperTiming.now()
                 val reply = if (llm.isAvailable) {
                     llm.respond(phrase, history) ?: local.match(phrase)
                 } else {
                     local.match(phrase)
                 }
+                JasperTiming.elapsed(
+                    "мозг чат",
+                    chatStartedAt,
+                    if (reply != null) "ответ='${reply.text}'" else "нет ответа",
+                )
+                JasperTiming.elapsed(
+                    "мозг итог",
+                    brainStartedAt,
+                    if (reply != null) "путь=чат" else "путь=тишина",
+                )
                 if (isActive) {
                     withContext(Dispatchers.Main) {
                         if (reply != null) {
@@ -68,8 +108,10 @@ class ConversationBrain(
                     }
                 }
             } catch (e: CancellationException) {
+                JasperTiming.elapsed("мозг итог", brainStartedAt, "отменён")
                 throw e
             } catch (e: Exception) {
+                JasperTiming.elapsed("мозг итог", brainStartedAt, "ошибка ${e.message}")
                 Log.w(TAG, "respondToPhrase failed: ${e.message}")
                 if (isActive) {
                     withContext(Dispatchers.Main) { onNoReply() }

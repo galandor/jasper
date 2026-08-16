@@ -27,8 +27,8 @@ enum class DriveAction(
 }
 
 /**
- * Движение только с именем в начале.
- * STT часто: «джазпер», «на лево» вместо «налево».
+ * Движение с именем в начале. STT часто ломает имя («расперь», «гаспер»)
+ * и кладёт чистое «вперёд» / «налево» в alternatives.
  */
 object DriveCommands {
     private val trailingFluff = Regex("""\s+(пожалуйста|давай|ну)$""")
@@ -49,24 +49,57 @@ object DriveCommands {
         Regex("""(боком\s+(на\s*)?прав|в\s*прав\w*\s+боком)""") to DriveAction.STRAFE_RIGHT,
         Regex("""(на\s*лев[аоеы]?|в\s*лев[аоеы]?|левее|левей|(^|\s)лево(\s|$)|поверн\w*\s*(на\s*)?лев)""") to DriveAction.ROTATE_LEFT,
         Regex("""(на\s*прав[аоеы]?|в\s*прав[аоеы]?|правее|правей|(^|\s)право(\s|$)|поверн\w*\s*(на\s*)?прав)""") to DriveAction.ROTATE_RIGHT,
-        Regex("""(поехали|в\s*перед|езжай|поезжай)""") to DriveAction.FORWARD,
+        Regex("""(поехали|вперед|в\s*перед|езжай|поезжай)""") to DriveAction.FORWARD,
     )
 
     fun parse(phrase: String): DriveAction? {
-        val command = commandAfterName(phrase) ?: return null
-        return matchCommand(command)
+        val command = commandAfterName(phrase)
+        if (command != null) return matchCommand(command)
+        val tokens = tokenize(phrase)
+        if (tokens.size >= 2 && looksLikeJasper(tokens[0])) {
+            return matchCommand(tokens.drop(1).joinToString(" ").replace(trailingFluff, "").trim())
+        }
+        return null
     }
 
-    fun parseAny(phrases: Iterable<String>): DriveAction? =
-        phrases.firstNotNullOfOrNull { parse(it) }
+    fun parseAny(phrases: Iterable<String>): DriveAction? {
+        val list = phrases.toList()
+        list.firstNotNullOfOrNull { parse(it) }?.let { return it }
+        if (list.any { addressed(it) }) {
+            list.firstNotNullOfOrNull { matchCommand(normalize(it)) }?.let { return it }
+        }
+        // STT часто отрывает имя: alts = [вперёд] / [налево]
+        return list.firstNotNullOfOrNull { phrase ->
+            val tokens = tokenize(phrase)
+            if (tokens.size == 1) matchCommand(tokens[0]) else null
+        }
+    }
 
-    /** Имя + похоже на руление — в LLM не отправлять, даже если команду не разобрали. */
+    /** Команда без имени — только пока машинка уже едет, STT часто теряет «Джаспер». */
+    fun parseMotionAny(phrases: Iterable<String>): DriveAction? =
+        phrases.firstNotNullOfOrNull { matchCommand(normalize(it)) }
+
+    /** Похоже на руление: кривое имя + движение, или само слово команды. */
     fun isChassisTalk(phrase: String): Boolean {
+        val command = commandAfterName(phrase)
+        if (command != null) {
+            if (command.isEmpty()) return false
+            if (matchCommand(command) != null) return true
+            val compact = command.replace(" ", "")
+            if (motionHint.containsMatchIn(command) || motionHint.containsMatchIn(compact)) return true
+        }
+        val tokens = tokenize(phrase)
+        if (tokens.size >= 2 && looksLikeJasper(tokens[0])) {
+            val rest = tokens.drop(1).joinToString(" ")
+            if (matchCommand(rest) != null || motionHint.containsMatchIn(rest)) return true
+        }
+        return matchCommand(normalize(phrase)) != null
+    }
+
+    /** Только имя («Джаспер», «эй джазпер») — ждём команду, без Gemini. */
+    fun isNameOnly(phrase: String): Boolean {
         val command = commandAfterName(phrase) ?: return false
-        if (command.isEmpty()) return false
-        if (matchCommand(command) != null) return true
-        val compact = command.replace(" ", "")
-        return motionHint.containsMatchIn(command) || motionHint.containsMatchIn(compact)
+        return command.isEmpty()
     }
 
     fun containsStopWord(phrase: String): Boolean {
@@ -92,6 +125,14 @@ object DriveCommands {
         }?.second
     }
 
+    private fun tokenize(phrase: String): List<String> =
+        normalize(phrase).split(' ').filter { it.isNotEmpty() }
+
+    private fun addressed(phrase: String): Boolean {
+        val tokens = tokenize(phrase)
+        return tokens.isNotEmpty() && looksLikeJasper(tokens[0])
+    }
+
     private fun skipName(tokens: List<String>): Int? {
         if (tokens.isEmpty()) return null
         var index = 0
@@ -104,15 +145,8 @@ object DriveCommands {
     }
 
     private fun looksLikeJasper(token: String): Boolean {
-        if (token.length !in 5..12) return false
-        if (token.startsWith("джас") ||
-            token.startsWith("джаз") ||
-            token.startsWith("джес") ||
-            token.startsWith("джез") ||
-            token.startsWith("jasp")
-        ) {
-            return true
-        }
+        if (token.length !in 4..14) return false
+        if (NAME_PREFIXES.any { token.startsWith(it) }) return true
         return NAME_ALIASES.any { alias -> levenshtein(token, alias) <= 2 }
     }
 
@@ -146,4 +180,9 @@ object DriveCommands {
     }
 
     private val NAME_ALIASES = listOf("джаспер", "джазпер", "джеспер", "jasper")
+
+    private val NAME_PREFIXES = listOf(
+        "джас", "джаз", "джес", "джез", "jasp",
+        "жас", "жаз", "гас", "газ", "расп", "rasp", "спер", "ясп",
+    )
 }

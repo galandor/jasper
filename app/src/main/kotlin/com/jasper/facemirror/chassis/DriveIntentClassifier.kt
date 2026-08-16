@@ -1,6 +1,7 @@
 package com.jasper.facemirror.chassis
 
 import android.util.Log
+import com.jasper.facemirror.debug.JasperTiming
 import com.jasper.facemirror.llm.GeminiClient
 import org.json.JSONObject
 
@@ -18,15 +19,21 @@ class DriveIntentClassifier(
         val unique = transcripts.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         if (unique.isEmpty()) return null
 
+        val startedAt = JasperTiming.now()
         val raw = client.generate(
             prompt = buildPrompt(unique),
             temperature = 0.1,
             maxOutputTokens = 256,
             timeoutMs = 5_000,
             firstModelOnly = true,
-        ) ?: return null
+        )
+        if (raw == null) {
+            JasperTiming.elapsed("классификатор команд", startedAt, "нет ответа Gemini transcripts=$unique")
+            return null
+        }
 
         val action = parseCmd(raw)
+        JasperTiming.elapsed("классификатор команд", startedAt, "$unique → $action")
         Log.i(TAG, "classify $unique → $action raw=${raw.take(80)}")
         return action
     }

@@ -41,6 +41,7 @@ import com.jasper.facemirror.camera.FaceAnalyzer
 import com.jasper.facemirror.chassis.ChassisDriver
 import com.jasper.facemirror.chassis.DriveAction
 import com.jasper.facemirror.chassis.DriveCommands
+import com.jasper.facemirror.debug.JasperTiming
 import com.jasper.facemirror.model.DialogPhase
 import com.jasper.facemirror.model.FaceExpression
 import com.jasper.facemirror.model.FaceGestureReactions
@@ -166,9 +167,14 @@ fun FaceMirrorScreen() {
             now - lastReplyMs < REPLY_COOLDOWN_MS &&
             dialogPhase != DialogPhase.INTERRUPTED
         ) {
+            JasperTiming.event(
+                "ответ пропущен",
+                "cooldown ${now - lastReplyMs}мс < ${REPLY_COOLDOWN_MS}мс текст='${reply.text}'",
+            )
             return
         }
         lastReplyMs = now
+        JasperTiming.event("TTS", "говорим '${reply.text}' voice=${reply.voice}")
 
         speechEngine?.pauseListening()
 
@@ -218,6 +224,7 @@ fun FaceMirrorScreen() {
     }
 
     fun applyDrive(drive: DriveAction) {
+        JasperTiming.event("машинка", "execute $drive connected=${chassisDriver.isConnected}")
         conversationBrain.cancelPending()
         if (isJasperSpeaking || dialogPhase == DialogPhase.SPEAKING || dialogPhase == DialogPhase.THINKING) {
             voiceSpeaker.stop()
@@ -262,20 +269,36 @@ fun FaceMirrorScreen() {
         resetExpressionLater()
     }
 
+    fun resolveDrive(candidates: List<String>): DriveAction? {
+        var drive = DriveCommands.parseAny(candidates)
+        if (drive == null && chassisDriver.isDriving) {
+            drive = DriveCommands.parseMotionAny(candidates)
+        }
+        return drive
+    }
+
     fun handleUserPhrase(phrase: String, history: List<String>, alternatives: List<String> = emptyList()) {
         if (phrase.isBlank()) return
 
         val candidates = (listOf(phrase) + alternatives).distinct()
-        val drive = DriveCommands.parseAny(candidates)
+        val drive = resolveDrive(candidates)
+        val chassisTalk = drive != null || candidates.any { DriveCommands.isChassisTalk(it) }
         Log.i("JasperChassis", "STT='$phrase' alts=$alternatives drive=$drive")
+        JasperTiming.event(
+            "фраза",
+            "STT='$phrase' alts=$alternatives regex=$drive chassisTalk=$chassisTalk " +
+                "phase=$dialogPhase speaking=$isJasperSpeaking driving=${chassisDriver.isDriving}",
+        )
 
         if (drive != null) {
+            JasperTiming.event("путь", "regex → $drive (без сети)")
             speechEngine?.acknowledgePhrase()
             applyDrive(drive)
             return
         }
 
         if (chassisDriver.isDriving && candidates.any { DriveCommands.containsStopWord(it) }) {
+            JasperTiming.event("путь", "стоп по слову во время езды")
             speechEngine?.acknowledgePhrase()
             applyDrive(DriveAction.STOP)
             return
@@ -283,6 +306,7 @@ fun FaceMirrorScreen() {
 
         // Пока Jasper говорит — микрофон выключен; отбрасываем эхо, если оно просочилось
         if (isJasperSpeaking || dialogPhase == DialogPhase.SPEAKING) {
+            JasperTiming.event("путь", "отброшено как эхо TTS")
             speechEngine?.acknowledgePhrase()
             return
         }
@@ -290,9 +314,15 @@ fun FaceMirrorScreen() {
         speechEngine?.acknowledgePhrase()
 
         if (InterruptCommands.isStopCommand(phrase)) {
+            JasperTiming.event("путь", "interrupt без LLM")
             interruptJasper()
             chassisDriver.stop()
             faceExpression = FaceExpression.NEUTRAL
+            return
+        }
+
+        if (candidates.all { DriveCommands.isNameOnly(it) }) {
+            JasperTiming.event("путь", "только имя — ждём команду, без Gemini")
             return
         }
 
@@ -301,11 +331,18 @@ fun FaceMirrorScreen() {
             lastReplyMs = 0L
         }
 
+        val llmPath = if (chassisTalk) {
+            "gemini_classify (regex не взял команду)"
+        } else {
+            "gemini_chat без классификатора"
+        }
+        JasperTiming.event("путь", "$llmPath — сеть, может занять секунды")
         dialogPhase = DialogPhase.THINKING
         conversationBrain.respondToPhrase(
             phrase = phrase,
             history = history,
             alternatives = alternatives,
+            classifyDrive = chassisTalk,
             onDrive = { action ->
                 if (dialogPhase == DialogPhase.INTERRUPTED) return@respondToPhrase
                 applyDrive(action)
@@ -344,18 +381,31 @@ fun FaceMirrorScreen() {
                     }
                 },
                 onSpeechState = { state ->
-                    speechState = state
+                    if (state.recognizedText != speechState.recognizedText ||
+                        state.partialText != speechState.partialText
+                    ) {
+                        speechState = state
+                    }
 
                     if (chassisDriver.isDriving && DriveCommands.containsStopWord(state.partialText)) {
                         chassisDriver.stop()
                         interruptJasper()
                         faceExpression = FaceExpression.NEUTRAL
                         dialogPhase = DialogPhase.LISTENING
-                    }
-
-                    val phrase = state.recognizedText
-                    if (phrase.isNotBlank()) {
-                        handleUserPhrase(phrase, state.history, state.recognizedAlternatives)
+                        speechEngine?.consumeUtteranceAndRestart()
+                    } else if (state.recognizedText.isBlank() && state.partialText.isNotBlank()) {
+                        val candidates = (listOf(state.partialText) + state.recognizedAlternatives).distinct()
+                        val drive = resolveDrive(candidates)
+                        if (drive != null) {
+                            JasperTiming.event("путь", "partial → $drive '${state.partialText}'")
+                            applyDrive(drive)
+                            speechEngine?.consumeUtteranceAndRestart()
+                        }
+                    } else {
+                        val phrase = state.recognizedText
+                        if (phrase.isNotBlank()) {
+                            handleUserPhrase(phrase, state.history, state.recognizedAlternatives)
+                        }
                     }
                 },
             )
@@ -405,7 +455,7 @@ private fun CameraAnalyzer(onFaceState: (FaceState) -> Unit) {
             cameraProvider = cameraProviderFuture.get()
 
             val imageAnalysis = ImageAnalysis.Builder()
-                .setTargetResolution(AndroidSize(640, 480))
+                .setTargetResolution(AndroidSize(320, 240))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
                 .also { analysis ->
