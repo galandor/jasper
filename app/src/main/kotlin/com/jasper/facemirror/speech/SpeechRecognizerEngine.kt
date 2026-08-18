@@ -1,66 +1,74 @@
 package com.jasper.facemirror.speech
 
-import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognitionService
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import com.jasper.facemirror.debug.JasperTiming
 import com.jasper.facemirror.model.SpeechState
-import java.util.Locale
+import org.json.JSONObject
+import org.vosk.LibVosk
+import org.vosk.LogLevel
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.RecognitionListener
+import org.vosk.android.SpeechService
+import java.util.concurrent.Executors
 
+/**
+ * Непрерывный офлайн STT на Vosk. Тот же публичный API, что раньше был
+ * у обёртки над Google `SpeechRecognizer`: pause/resume для TTS, acknowledge,
+ * consume на ранней команде с partial.
+ */
 class SpeechRecognizerEngine(
-    private val context: Context,
+    context: Context,
     private val onState: (SpeechState) -> Unit,
 ) : RecognitionListener {
 
+    private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var speechRecognizer: SpeechRecognizer? = null
+    private val unpackExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "jasper-vosk-init").apply { isDaemon = true }
+    }
+
+    private var model: Model? = null
+    private var recognizer: Recognizer? = null
+    private var speechService: SpeechService? = null
+
     private var state = SpeechState()
     private var shouldRun = false
     private var paused = false
-    private var listenSession: ListenSession? = null
-    private var suppressErrorRestart = false
     private var utteranceConsumed = false
+    private var startGeneration = 0
+    private var loadAttempts = 0
+
+    private var listenStartedAt = 0L
+    private var readyAt = 0L
+    private var firstPartialAt = 0L
+    private var speechBeginAt = 0L
+    private var lastPartial = ""
 
     fun start() {
-        val available = SpeechRecognizer.isRecognitionAvailable(context)
-        val onDevice = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
         JasperTiming.event(
             "STT старт движка",
-            "available=$available onDevice=$onDevice " +
-                "device=${android.os.Build.MODEL} sdk=${Build.VERSION.SDK_INT}",
+            "engine=vosk model=small-ru-0.22 " +
+                "device=${Build.MODEL} sdk=${Build.VERSION.SDK_INT}",
         )
-        if (!available) {
-            JasperTiming.event("STT нет RecognitionService на устройстве")
-            return
-        }
         shouldRun = true
-        mainHandler.post {
-            if (speechRecognizer == null) {
-                speechRecognizer = createPreferredRecognizer().also {
-                    it.setRecognitionListener(this)
-                }
-            }
-            updateState { copy(isListening = true) }
-            startListening()
-        }
+        paused = false
+        val gen = ++startGeneration
+        unpackExecutor.execute { loadAndListen(gen) }
     }
 
     fun stop() {
         shouldRun = false
-        mainHandler.post {
-            speechRecognizer?.cancel()
-            speechRecognizer?.destroy()
-            speechRecognizer = null
-            listenSession = null
+        startGeneration++
+        runOnMain {
+            tearDownMic()
+            recognizer?.close()
+            recognizer = null
+            model?.close()
+            model = null
             updateState { SpeechState.Idle }
         }
     }
@@ -68,9 +76,8 @@ class SpeechRecognizerEngine(
     fun pauseListening() {
         paused = true
         JasperTiming.event("STT пауза (TTS)")
-        mainHandler.post {
-            speechRecognizer?.cancel()
-            listenSession = null
+        runOnMain {
+            speechService?.setPause(true)
             updateState {
                 copy(
                     partialText = "",
@@ -84,32 +91,34 @@ class SpeechRecognizerEngine(
     fun resumeListening() {
         paused = false
         JasperTiming.event("STT resume через 250мс")
-        if (shouldRun) scheduleRestart(250L)
+        if (!shouldRun) return
+        mainHandler.postDelayed({
+            if (!shouldRun || paused) return@postDelayed
+            speechService?.reset()
+            speechService?.setPause(false)
+            beginUtteranceClock()
+            JasperTiming.event("STT слушаю")
+            updateState { copy(isListening = true) }
+        }, TTS_RESUME_DELAY_MS)
     }
 
     /** Сбрасывает обработанную фразу, чтобы можно было сказать её снова. */
     fun acknowledgePhrase() {
-        val clear = {
+        runOnMain {
             updateState { copy(recognizedText = "", partialText = "", recognizedAlternatives = emptyList()) }
-        }
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            clear()
-        } else {
-            mainHandler.post(clear)
         }
     }
 
     /**
-     * Команда уже взята с partial — бросаем текущую сессию, чтобы Google
-     * не ждал ещё секунду тишины.
+     * Команда уже взята с partial — сбрасываем текущую реплику Vosk,
+     * чтобы хвост той же фразы не ушёл вторым финалом.
      */
     fun consumeUtteranceAndRestart() {
-        val restart = {
+        runOnMain {
             utteranceConsumed = true
-            listenSession?.consumed = true
-            suppressErrorRestart = true
-            listenSession = null
-            speechRecognizer?.cancel()
+            lastPartial = ""
+            speechService?.reset()
+            beginUtteranceClock()
             updateState {
                 copy(
                     recognizedText = "",
@@ -119,46 +128,181 @@ class SpeechRecognizerEngine(
                     mouthOpen = 0f,
                 )
             }
-            if (shouldRun && !paused) scheduleRestart(60L)
-        }
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            restart()
-        } else {
-            mainHandler.post(restart)
         }
     }
 
-    private fun startListening() {
-        if (!shouldRun || paused || speechRecognizer == null) {
-            if (!paused) {
-                JasperTiming.event(
-                    "STT startListening пропущен",
-                    "shouldRun=$shouldRun recognizer=${speechRecognizer != null}",
-                )
+    private fun loadAndListen(gen: Int) {
+        try {
+            val unpackStarted = JasperTiming.now()
+            val dir = VoskModelStore.unpack(appContext)
+            JasperTiming.elapsed("STT распаковка модели", unpackStarted, dir.absolutePath)
+            if (!shouldRun || gen != startGeneration) return
+
+            val loadStarted = JasperTiming.now()
+            LibVosk.setLogLevel(LogLevel.WARNINGS)
+            val loadedModel = Model(dir.absolutePath)
+            val loadedRecognizer = Recognizer(loadedModel, SAMPLE_RATE)
+            JasperTiming.elapsed("STT модель в памяти", loadStarted)
+            loadAttempts = 0
+
+            mainHandler.post {
+                if (!shouldRun || gen != startGeneration) {
+                    loadedRecognizer.close()
+                    loadedModel.close()
+                    return@post
+                }
+                model = loadedModel
+                recognizer = loadedRecognizer
+                startMic(loadedRecognizer)
+            }
+        } catch (e: Exception) {
+            JasperTiming.event("STT vosk ошибка загрузки", e.message ?: e.javaClass.simpleName)
+            if (!shouldRun || gen != startGeneration) return
+            loadAttempts++
+            if (loadAttempts <= MAX_LOAD_ATTEMPTS) {
+                mainHandler.postDelayed({
+                    if (shouldRun && gen == startGeneration) {
+                        unpackExecutor.execute { loadAndListen(gen) }
+                    }
+                }, 2_000L)
+            }
+        }
+    }
+
+    private fun startMic(rec: Recognizer) {
+        if (!shouldRun || paused) return
+        try {
+            if (speechService == null) {
+                speechService = SpeechService(rec, SAMPLE_RATE)
+            }
+            beginUtteranceClock()
+            JasperTiming.event("STT слушаю")
+            val started = speechService?.startListening(this) == true
+            if (started) {
+                readyAt = JasperTiming.now()
+                JasperTiming.elapsed("STT готов", listenStartedAt)
+                updateState { copy(isListening = true) }
+            } else {
+                JasperTiming.event("STT vosk уже слушает")
+                updateState { copy(isListening = true) }
+            }
+        } catch (e: Exception) {
+            JasperTiming.event("STT vosk микрофон", e.message ?: e.javaClass.simpleName)
+            tearDownMic()
+            mainHandler.postDelayed({
+                if (shouldRun && !paused) recognizer?.let { startMic(it) }
+            }, 1_000L)
+        }
+    }
+
+    private fun tearDownMic() {
+        try {
+            speechService?.cancel()
+            speechService?.shutdown()
+        } catch (_: Exception) {
+        }
+        speechService = null
+    }
+
+    private fun beginUtteranceClock() {
+        listenStartedAt = JasperTiming.now()
+        readyAt = 0L
+        firstPartialAt = 0L
+        speechBeginAt = 0L
+        lastPartial = ""
+        utteranceConsumed = false
+    }
+
+    override fun onPartialResult(hypothesis: String?) {
+        val text = jsonField(hypothesis, "partial")
+        if (text.isEmpty()) {
+            if (state.partialText.isNotEmpty() && !utteranceConsumed) {
+                updateState { copy(partialText = "", isSpeaking = false) }
             }
             return
         }
-        listenSession = ListenSession()
-        utteranceConsumed = false
-        JasperTiming.event("STT слушаю")
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale("ru", "RU").toLanguageTag())
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, Locale("ru", "RU").toLanguageTag())
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-            // Google иначе держит паузу ~1.5с после короткой команды
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 200)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 250)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 400)
+        if (utteranceConsumed) {
+            utteranceConsumed = false
         }
-        speechRecognizer?.startListening(intent)
+        if (speechBeginAt == 0L) {
+            speechBeginAt = JasperTiming.now()
+            JasperTiming.elapsed("STT начал слышать речь", listenStartedAt)
+        }
+        if (firstPartialAt == 0L) {
+            firstPartialAt = JasperTiming.now()
+            JasperTiming.elapsed("STT первый partial", listenStartedAt, "'$text'")
+        }
+        lastPartial = text
+        updateState {
+            copy(
+                partialText = text,
+                isSpeaking = true,
+                isListening = true,
+            )
+        }
     }
 
-    private fun scheduleRestart(delayMs: Long = 150L) {
+    override fun onResult(hypothesis: String?) {
+        emitFinal(jsonField(hypothesis, "text"), fromEndpoint = true)
+    }
+
+    override fun onFinalResult(hypothesis: String?) {
+        emitFinal(jsonField(hypothesis, "text"), fromEndpoint = false)
+    }
+
+    override fun onError(exception: Exception?) {
+        JasperTiming.event(
+            "STT vosk ошибка",
+            exception?.message ?: exception?.javaClass?.simpleName.orEmpty(),
+        )
         if (!shouldRun || paused) return
-        mainHandler.postDelayed({ startListening() }, delayMs)
+        tearDownMic()
+        recognizer?.let { rec ->
+            mainHandler.postDelayed({
+                if (shouldRun && !paused) startMic(rec)
+            }, 400L)
+        }
+    }
+
+    override fun onTimeout() {
+        JasperTiming.event("STT vosk timeout")
+        if (shouldRun && !paused) {
+            speechService?.startListening(this)
+        }
+    }
+
+    private fun emitFinal(text: String, fromEndpoint: Boolean) {
+        if (utteranceConsumed) {
+            utteranceConsumed = false
+            beginUtteranceClock()
+            return
+        }
+        if (text.isEmpty()) {
+            beginUtteranceClock()
+            updateState { copy(partialText = "", isSpeaking = false, isListening = true) }
+            return
+        }
+        val source = if (fromEndpoint) "endpoint" else "stop"
+        val now = JasperTiming.now()
+        JasperTiming.elapsed(
+            "STT финал",
+            listenStartedAt,
+            "фраза='$text' источник=$source " +
+                "ждал_ready=${delta(readyAt, listenStartedAt)}мс " +
+                "первый_partial=${delta(firstPartialAt, listenStartedAt)}мс " +
+                "речь=${delta(now, speechBeginAt)}мс",
+        )
+        updateState {
+            copy(
+                recognizedText = text,
+                partialText = "",
+                recognizedAlternatives = emptyList(),
+                history = (history + text).takeLast(5),
+                isSpeaking = false,
+                isListening = true,
+            )
+        }
+        beginUtteranceClock()
     }
 
     private fun updateState(transform: SpeechState.() -> SpeechState) {
@@ -166,267 +310,28 @@ class SpeechRecognizerEngine(
         onState(state)
     }
 
-    override fun onReadyForSpeech(params: Bundle?) {
-        val session = listenSession
-        if (session != null) {
-            session.readyAt = JasperTiming.now()
-            JasperTiming.elapsed("STT готов", session.startedAt)
-        }
-        updateState { copy(isListening = true) }
-    }
-
-    override fun onBeginningOfSpeech() {
-        val session = listenSession
-        if (session != null) {
-            session.speechBeginAt = JasperTiming.now()
-            JasperTiming.elapsed("STT начал слышать речь", session.startedAt)
-        }
-        updateState { copy(isSpeaking = true) }
-    }
-
-    override fun onRmsChanged(rmsdB: Float) {
-        listenSession?.let { session ->
-            if (rmsdB > session.peakRms) session.peakRms = rmsdB
-        }
-        // UI не использует RMS; не дёргаем Compose на каждом тике.
-    }
-
-    override fun onPartialResults(partialResults: Bundle?) {
-        if (utteranceConsumed || listenSession?.consumed == true) return
-        val all = partialResults
-            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            ?.map { it.trim() }
-            ?.filter { it.isNotEmpty() }
-            .orEmpty()
-        val text = all.firstOrNull().orEmpty()
-        if (text.isNotEmpty()) {
-            val session = listenSession
-            if (session != null && session.firstPartialAt == 0L) {
-                session.firstPartialAt = JasperTiming.now()
-                JasperTiming.elapsed("STT первый partial", session.startedAt, "'$text'")
-            }
-            if (session != null) {
-                session.lastPartialAt = JasperTiming.now()
-                session.lastPartial = text
-            }
-            updateState {
-                copy(
-                    partialText = text,
-                    recognizedAlternatives = all,
-                    isSpeaking = true,
-                )
-            }
-        }
-    }
-
-    override fun onResults(results: Bundle?) {
-        if (utteranceConsumed || listenSession?.consumed == true) {
-            utteranceConsumed = false
-            listenSession = null
-            val skip = suppressErrorRestart
-            suppressErrorRestart = false
-            if (!skip) scheduleRestart(60L)
-            return
-        }
-        val all = results
-            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            ?.map { it.trim() }
-            ?.filter { it.isNotEmpty() }
-            .orEmpty()
-
-        logSessionEnd(ok = all.isNotEmpty(), phrase = all.firstOrNull().orEmpty(), alts = all)
-
-        if (all.isNotEmpty()) {
-            updateState {
-                copy(
-                    recognizedText = all.first(),
-                    recognizedAlternatives = all,
-                    partialText = "",
-                    history = (history + all.first()).takeLast(5),
-                    isSpeaking = false,
-                    mouthOpen = 0f,
-                )
-            }
+    private fun runOnMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
         } else {
-            updateState { copy(partialText = "", recognizedAlternatives = emptyList(), isSpeaking = false, mouthOpen = 0f) }
+            mainHandler.post(block)
         }
-        listenSession = null
-        scheduleRestart()
-    }
-
-    override fun onEndOfSpeech() {
-        val session = listenSession
-        if (session != null) {
-            session.endOfSpeechAt = JasperTiming.now()
-            val speechMs = if (session.speechBeginAt > 0L) {
-                session.endOfSpeechAt - session.speechBeginAt
-            } else {
-                -1L
-            }
-            JasperTiming.elapsed(
-                "STT конец речи",
-                session.startedAt,
-                "говорил=${speechMs}мс partial='${session.lastPartial}'",
-            )
-        }
-        updateState { copy(isSpeaking = partialText.isNotEmpty()) }
-    }
-
-    override fun onError(error: Int) {
-        val skipRestart = suppressErrorRestart
-        suppressErrorRestart = false
-        val delay = when (error) {
-            SpeechRecognizer.ERROR_NO_MATCH,
-            SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
-            -> 80L
-            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 400L
-            else -> 300L
-        }
-        logSessionEnd(ok = false, phrase = "", alts = emptyList(), error = errorName(error), restartMs = delay)
-        listenSession = null
-        updateState {
-            copy(
-                partialText = if (error == SpeechRecognizer.ERROR_NO_MATCH) partialText else "",
-                isSpeaking = false,
-                mouthOpen = 0f,
-            )
-        }
-        if (!skipRestart) scheduleRestart(delay)
-    }
-
-    override fun onBufferReceived(buffer: ByteArray?) = Unit
-    override fun onEvent(eventType: Int, params: Bundle?) = Unit
-
-    private fun logSessionEnd(
-        ok: Boolean,
-        phrase: String,
-        alts: List<String>,
-        error: String? = null,
-        restartMs: Long = 150L,
-    ) {
-        val session = listenSession ?: return
-        val now = JasperTiming.now()
-        val readyMs = delta(session.readyAt, session.startedAt)
-        val speechMs = if (session.speechBeginAt > 0L && session.endOfSpeechAt > 0L) {
-            session.endOfSpeechAt - session.speechBeginAt
-        } else if (session.speechBeginAt > 0L) {
-            now - session.speechBeginAt
-        } else {
-            -1L
-        }
-        val afterEndMs = if (session.endOfSpeechAt > 0L) now - session.endOfSpeechAt else -1L
-        val firstPartialMs = delta(session.firstPartialAt, session.startedAt)
-        val peak = if (session.peakRms == Float.NEGATIVE_INFINITY) "n/a" else "%.1f".format(session.peakRms)
-        val detail = buildString {
-            if (ok) {
-                append("фраза='$phrase' alts=$alts")
-            } else {
-                append("ошибка=${error ?: "пусто"} restart=${restartMs}мс")
-                if (session.lastPartial.isNotEmpty()) append(" partial='${session.lastPartial}'")
-            }
-            append(" | ждал_ready=${readyMs}мс")
-            append(" первый_partial=${firstPartialMs}мс")
-            append(" речь=${speechMs}мс")
-            append(" пауза_после_конца=${afterEndMs}мс")
-            append(" peakRms=$peak")
-        }
-        JasperTiming.elapsed(if (ok) "STT финал" else "STT ошибка", session.startedAt, detail)
     }
 
     private fun delta(at: Long, from: Long): Long = if (at > 0L) at - from else -1L
 
-    /**
-     * Xiaomi/MIUI отдаёт свой распознаватель по умолчанию — часто NO_MATCH без partials.
-     * Берём Google Speech Services, если пакет есть.
-     */
-    private fun createPreferredRecognizer(): SpeechRecognizer {
-        @Suppress("DEPRECATION")
-        val services = context.packageManager.queryIntentServices(
-            Intent(RecognitionService.SERVICE_INTERFACE),
-            0,
-        )
-        val names = services.mapNotNull { resolve ->
-            val info = resolve.serviceInfo ?: return@mapNotNull null
-            ComponentName(info.packageName, info.name)
-        }
-        JasperTiming.event(
-            "STT сервисы",
-            names.joinToString { it.flattenToShortString() }.ifEmpty { "пусто" },
-        )
-
-        val google = ComponentName(GOOGLE_APP_PACKAGE, GOOGLE_RECOGNITION_SERVICE)
-        if (isServiceVisible(google)) {
-            tryCreate(google)?.let { return it }
-        }
-
-        names.firstOrNull { it.packageName.startsWith("com.google.android.") && it != google }
-            ?.let { tryCreate(it)?.let { recognizer -> return recognizer } }
-
-        names.firstOrNull { component ->
-            val p = component.packageName.lowercase()
-            "xiaomi" !in p && "miui" !in p && "mibrain" !in p
-        }?.let { tryCreate(it)?.let { recognizer -> return recognizer } }
-
-        JasperTiming.event("STT выбран сервис", "системный default")
-        return SpeechRecognizer.createSpeechRecognizer(context)
-    }
-
-    private fun isServiceVisible(component: ComponentName): Boolean {
-        return try {
-            @Suppress("DEPRECATION")
-            context.packageManager.getServiceInfo(component, 0)
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    private fun tryCreate(component: ComponentName): SpeechRecognizer? {
-        return try {
-            SpeechRecognizer.createSpeechRecognizer(context, component).also {
-                JasperTiming.event("STT выбран сервис", component.flattenToString())
-            }
-        } catch (e: Exception) {
-            JasperTiming.event(
-                "STT сервис не взялся",
-                "${component.flattenToShortString()}: ${e.message}",
-            )
-            null
-        }
-    }
-
-    private class ListenSession {
-        val startedAt: Long = JasperTiming.now()
-        var readyAt: Long = 0L
-        var speechBeginAt: Long = 0L
-        var firstPartialAt: Long = 0L
-        var lastPartialAt: Long = 0L
-        var lastPartial: String = ""
-        var endOfSpeechAt: Long = 0L
-        var peakRms: Float = Float.NEGATIVE_INFINITY
-        var consumed: Boolean = false
-    }
-
     companion object {
-        private const val GOOGLE_APP_PACKAGE = "com.google.android.googlequicksearchbox"
-        private const val GOOGLE_RECOGNITION_SERVICE =
-            "com.google.android.voicesearch.serviceapi.GoogleRecognitionService"
+        private const val SAMPLE_RATE = 16_000.0f
+        private const val TTS_RESUME_DELAY_MS = 250L
+        private const val MAX_LOAD_ATTEMPTS = 3
 
-        private fun errorName(error: Int): String = when (error) {
-            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"
-            SpeechRecognizer.ERROR_NETWORK -> "NETWORK"
-            SpeechRecognizer.ERROR_AUDIO -> "AUDIO"
-            SpeechRecognizer.ERROR_SERVER -> "SERVER"
-            SpeechRecognizer.ERROR_CLIENT -> "CLIENT"
-            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
-            SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
-            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "RECOGNIZER_BUSY"
-            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "PERMISSIONS"
-            SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "TOO_MANY_REQUESTS"
-            SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "SERVER_DISCONNECTED"
-            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "LANGUAGE_NOT_SUPPORTED"
-            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "LANGUAGE_UNAVAILABLE"
-            else -> "UNKNOWN($error)"
+        private fun jsonField(raw: String?, key: String): String {
+            if (raw.isNullOrBlank()) return ""
+            return try {
+                JSONObject(raw).optString(key, "").trim()
+            } catch (_: Exception) {
+                ""
+            }
         }
     }
 }

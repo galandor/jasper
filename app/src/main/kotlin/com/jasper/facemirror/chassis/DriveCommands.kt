@@ -36,8 +36,11 @@ object DriveCommands {
     private val motorStopWord = Regex("""(^|\s)(стоп|стой|остановись|тормоз)(\s|$)""")
 
     private val motionHint = Regex(
-        """лев|прав|перед|еха|езж|зад|стоп|стой|тормоз|бок|гуля|след|пойд|повор|крут|развер|подключ|соедини|машин|блютуз""",
+        """лев|прав|перед|прям|еха|езж|зад|стоп|стой|тормоз|бок|гуля|след|пойд|повор|крут|развер|подключ|соедини|машин|блютуз""",
     )
+
+    /** «боком» произносят и до направления, и после: «налево боком». */
+    private val sidewaysWord = Regex("""бок(ом)?""")
 
     private val rules = listOf(
         Regex("""(стоп|стой|остановись|тормоз)""") to DriveAction.STOP,
@@ -47,9 +50,9 @@ object DriveCommands {
         Regex("""(назад)""") to DriveAction.BACKWARD,
         Regex("""(боком\s+(на\s*)?лев|в\s*лев\w*\s+боком)""") to DriveAction.STRAFE_LEFT,
         Regex("""(боком\s+(на\s*)?прав|в\s*прав\w*\s+боком)""") to DriveAction.STRAFE_RIGHT,
-        Regex("""(на\s*лев[аоеы]?|в\s*лев[аоеы]?|левее|левей|(^|\s)лево(\s|$)|поверн\w*\s*(на\s*)?лев)""") to DriveAction.ROTATE_LEFT,
-        Regex("""(на\s*прав[аоеы]?|в\s*прав[аоеы]?|правее|правей|(^|\s)право(\s|$)|поверн\w*\s*(на\s*)?прав)""") to DriveAction.ROTATE_RIGHT,
-        Regex("""(поехали|вперед|в\s*перед|езжай|поезжай)""") to DriveAction.FORWARD,
+        Regex("""(на\s*лев[аоеы]?|в\s*лев[аоеы]?|слева|левее|левей|(^|\s)лево(\s|$)|поверн\w*\s*(на\s*)?лев)""") to DriveAction.ROTATE_LEFT,
+        Regex("""(на\s*прав[аоеы]?|в\s*прав[аоеы]?|справа|правее|правей|(^|\s)право(\s|$)|поверн\w*\s*(на\s*)?прав)""") to DriveAction.ROTATE_RIGHT,
+        Regex("""(поехали|вперед|в\s*перед|прямо|езжай|поезжай)""") to DriveAction.FORWARD,
     )
 
     fun parse(phrase: String): DriveAction? {
@@ -78,6 +81,66 @@ object DriveCommands {
     /** Команда без имени — только пока машинка уже едет, STT часто теряет «Джаспер». */
     fun parseMotionAny(phrases: Iterable<String>): DriveAction? =
         phrases.firstNotNullOfOrNull { matchCommand(normalize(it)) }
+
+    /**
+     * Все команды фразы в порядке произнесения: Google склеивает подряд сказанное
+     * в одну реплику («Джаспер направо Джаспер прямо»), а [matchCommand] вернул бы
+     * только одну — ту, чьё правило стоит выше в [rules].
+     */
+    fun parseSequence(phrase: String): List<DriveAction> {
+        val tokens = tokenize(phrase)
+        val actions = mutableListOf<DriveAction>()
+        var index = 0
+        while (index < tokens.size) {
+            if (isAddressToken(tokens[index])) {
+                index++
+                continue
+            }
+            val matched = matchAt(tokens, index)
+            if (matched == null) {
+                index++
+                continue
+            }
+            var (size, action) = matched
+            val strafe = strafeUpgrade(action, tokens.getOrNull(index + size))
+            if (strafe != null) {
+                action = strafe
+                size++
+            }
+            if (actions.lastOrNull() != action) actions += action
+            index += size
+        }
+        return actions
+    }
+
+    fun parseSequenceAny(phrases: Iterable<String>): List<DriveAction> =
+        phrases.map { parseSequence(it) }.maxByOrNull { it.size }.orEmpty()
+
+    /**
+     * Самое короткое совпадение, начинающееся с [index]: правила ищут подстроку,
+     * поэтому широкое окно поймало бы команду, сказанную позже.
+     */
+    private fun matchAt(tokens: List<String>, index: Int): Pair<Int, DriveAction>? {
+        for (size in 1..MAX_COMMAND_TOKENS) {
+            if (index + size > tokens.size) return null
+            val chunk = tokens.subList(index, index + size)
+            if (chunk.drop(1).any { isAddressToken(it) }) return null
+            val action = matchCommand(chunk.joinToString(" "))
+            if (action != null) return size to action
+        }
+        return null
+    }
+
+    private fun strafeUpgrade(action: DriveAction, next: String?): DriveAction? {
+        if (next == null || !sidewaysWord.matches(next)) return null
+        return when (action) {
+            DriveAction.ROTATE_LEFT -> DriveAction.STRAFE_LEFT
+            DriveAction.ROTATE_RIGHT -> DriveAction.STRAFE_RIGHT
+            else -> null
+        }
+    }
+
+    private fun isAddressToken(token: String): Boolean = token == "эй" || looksLikeJasper(token)
 
     /** Похоже на руление: кривое имя + движение, или само слово команды. */
     fun isChassisTalk(phrase: String): Boolean {
@@ -178,6 +241,8 @@ object DriveCommands {
         }
         return previous[right.length]
     }
+
+    private const val MAX_COMMAND_TOKENS = 2
 
     private val NAME_ALIASES = listOf("джаспер", "джазпер", "джеспер", "jasper")
 

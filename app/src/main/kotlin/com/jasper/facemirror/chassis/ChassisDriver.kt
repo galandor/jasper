@@ -45,6 +45,7 @@ class ChassisDriver(
     private var socket: BluetoothSocket? = null
     private var holdJob: Job? = null
     private var connectJob: Job? = null
+    private var queueJob: Job? = null
 
     fun start() {
         connectFinished = false
@@ -68,6 +69,32 @@ class ChassisDriver(
     }
 
     fun execute(action: DriveAction) {
+        queueJob?.cancel()
+        queueJob = null
+        executeNow(action)
+    }
+
+    /**
+     * Несколько команд из одной реплики, по очереди: каждая ждёт свой импульс.
+     * Любая одиночная команда и «стоп» сбрасывают очередь.
+     */
+    fun executeSequence(actions: List<DriveAction>) {
+        val queue = actions.take(MAX_QUEUE_SIZE)
+        if (queue.size <= 1) {
+            queue.firstOrNull()?.let { execute(it) }
+            return
+        }
+        queueJob?.cancel()
+        queueJob = scope.launch {
+            for (action in queue) {
+                executeNow(action)
+                if (action == DriveAction.STOP) break
+                delay(if (action.hold) action.holdMs + QUEUE_GAP_MS else QUEUE_GAP_MS)
+            }
+        }
+    }
+
+    private fun executeNow(action: DriveAction) {
         if (action == DriveAction.CONNECT) {
             start()
             return
@@ -111,8 +138,10 @@ class ChassisDriver(
     }
 
     fun release() {
+        queueJob?.cancel()
         holdJob?.cancel()
         connectJob?.cancel()
+        queueJob = null
         holdJob = null
         connectJob = null
         isConnected = false
@@ -213,6 +242,8 @@ class ChassisDriver(
     companion object {
         private const val TAG = "JasperChassis"
         private const val HOLD_INTERVAL_MS = 200L
+        private const val QUEUE_GAP_MS = 250L
+        private const val MAX_QUEUE_SIZE = 4
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private val CHASSIS_NAME_HINTS = listOf("HC-06", "HC-05", "HC-08", "linvor", "BT04", "MLN")
     }

@@ -68,7 +68,7 @@
 Фраза → LLM → TTS → pauseListening() … resumeListening()
 ```
 
-Пока TTS говорит, `SpeechRecognizer` отменён (`pauseListening`). Новая фраза не обрабатывается.
+Пока TTS говорит, Vosk на паузе (`setPause`). Новая фраза не обрабатывается.
 
 ### Решение: turn-taking (очередь реплик)
 

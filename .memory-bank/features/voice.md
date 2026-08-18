@@ -20,18 +20,18 @@
 
 `speech/SpeechRecognizerEngine.kt`
 
-- Обёртка над Android `SpeechRecognizer`
-- Предпочитает Google Speech Services (`GoogleRecognitionService`), не MIUI
-- Непрерывное прослушивание: после `onResults` / `onError` перезапуск через `scheduleRestart`
-- Язык: `ru-RU`, partial results включены
-- `onRmsChanged` — только peak RMS в логах, UI не обновляется
+- Офлайн STT: Vosk `SpeechService` + модель `vosk-model-small-ru-0.22` (~45MB в assets)
+- Непрерывный `AudioRecord` 16 kHz / mono — без сессий Google и без `NO_MATCH`
+- Partial-результаты идут потоком; команды шасси берутся с partial, чат — с endpoint (`onResult`)
+- Модель скачивается Gradle-задачей `unpackVoskModel` при сборке, на устройстве копируется в `filesDir`
 
 **Пауза при TTS:**
 
 ```kotlin
-pauseListening()   // cancel + paused = true
-resumeListening()  // paused = false + restart через 250 ms
+pauseListening()   // SpeechService.setPause(true) — микрофон открыт, аудио в распознаватель не идёт
+resumeListening()  // reset + setPause(false) через 250 ms
 acknowledgePhrase() // сброс recognizedText после обработки
+consumeUtteranceAndRestart() // команда с partial: recognizer.reset(), без перезапуска микрофона
 ```
 
 ### ConversationBrain
@@ -117,8 +117,8 @@ acknowledgePhrase() // сброс recognizedText после обработки
 
 ```text
 Пользователь говорит
-  → SpeechRecognizer.onResults → recognizedText
-  → handleUserPhrase()
+  → Vosk onPartialResult / onResult → partialText / recognizedText
+  → команда на partial или handleUserPhrase() на финале
       → InterruptCommands? → interruptJasper()
       → ConversationBrain.respondToPhrase()
           → Gemini (JSON) или GreetingDetector (regex)
@@ -178,8 +178,7 @@ data class GreetingReply(
 ## Требования
 
 - `RECORD_AUDIO` — микрофон
-- `INTERNET` — Google Speech Services + Gemini API (опционально)
-- `RecognitionService` на устройстве (обычно Google)
+- `INTERNET` — только Gemini API (опционально); STT офлайн
 - `gemini.api.key` в `local.properties` для LLM-ответов
 
 ---
@@ -187,7 +186,7 @@ data class GreetingReply(
 ## Известные ограничения
 
 - STT паузится на время TTS — barge-in голосом отложен (эхо)
-- Offline STT не настроен
+- Первая установка копирует ~45MB модели в filesDir
 - Качество TTS зависит от голосов устройства
 - Без Gemini API — только локальные regex-реакции
 
@@ -196,7 +195,6 @@ data class GreetingReply(
 ## Возможные улучшения
 
 - Barge-in с AEC или tap-to-interrupt
-- End-of-turn debounce на partial results
-- Offline STT (Vosk)
+- End-of-turn debounce на partial, если команды в одной фразе режутся рано
 - Piper / cloud TTS для мультяшного голоса
 - `CommandRouter` для игровых команд («закрой глаза»)

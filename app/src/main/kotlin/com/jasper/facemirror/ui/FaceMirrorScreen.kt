@@ -269,12 +269,45 @@ fun FaceMirrorScreen() {
         resetExpressionLater()
     }
 
+    fun applyDriveSequence(actions: List<DriveAction>) {
+        if (actions.size <= 1 || actions.contains(DriveAction.CONNECT)) {
+            actions.firstOrNull()?.let { applyDrive(it) }
+            return
+        }
+        JasperTiming.event(
+            "машинка",
+            "очередь ${actions.joinToString(" → ")} connected=${chassisDriver.isConnected}",
+        )
+        conversationBrain.cancelPending()
+        if (isJasperSpeaking || dialogPhase == DialogPhase.SPEAKING || dialogPhase == DialogPhase.THINKING) {
+            voiceSpeaker.stop()
+            isJasperSpeaking = false
+        }
+        chassisDriver.executeSequence(actions)
+        if (chassisDriver.connectFinished && !chassisDriver.isConnected) {
+            respondWithVoice(
+                GreetingReply("Машинка не слышит!", VoiceEmotion.SAD, FaceExpression.SAD),
+                ignoreCooldown = true,
+            )
+            return
+        }
+        faceExpression = actions.first().ack?.expression ?: FaceExpression.PLAYFUL
+        dialogPhase = DialogPhase.LISTENING
+        resetExpressionLater()
+    }
+
     fun resolveDrive(candidates: List<String>): DriveAction? {
         var drive = DriveCommands.parseAny(candidates)
         if (drive == null && chassisDriver.isDriving) {
             drive = DriveCommands.parseMotionAny(candidates)
         }
         return drive
+    }
+
+    /** [gate] уже подтвердил, что фразу можно исполнять; порядок берём из разбора всей реплики. */
+    fun resolveDriveSequence(candidates: List<String>, gate: DriveAction): List<DriveAction> {
+        val sequence = DriveCommands.parseSequenceAny(candidates)
+        return if (sequence.size > 1) sequence else listOf(gate)
     }
 
     fun handleUserPhrase(phrase: String, history: List<String>, alternatives: List<String> = emptyList()) {
@@ -291,9 +324,10 @@ fun FaceMirrorScreen() {
         )
 
         if (drive != null) {
-            JasperTiming.event("путь", "regex → $drive (без сети)")
+            val sequence = resolveDriveSequence(candidates, drive)
+            JasperTiming.event("путь", "regex → ${sequence.joinToString(" → ")} (без сети)")
             speechEngine?.acknowledgePhrase()
-            applyDrive(drive)
+            applyDriveSequence(sequence)
             return
         }
 
@@ -394,18 +428,19 @@ fun FaceMirrorScreen() {
                         dialogPhase = DialogPhase.LISTENING
                         speechEngine?.consumeUtteranceAndRestart()
                     } else if (state.recognizedText.isBlank() && state.partialText.isNotBlank()) {
-                        val candidates = (listOf(state.partialText) + state.recognizedAlternatives).distinct()
+                        val candidates = listOf(state.partialText)
                         val drive = resolveDrive(candidates)
                         if (drive != null) {
-                            JasperTiming.event("путь", "partial → $drive '${state.partialText}'")
-                            applyDrive(drive)
+                            val sequence = resolveDriveSequence(candidates, drive)
+                            JasperTiming.event(
+                                "путь",
+                                "partial → ${sequence.joinToString(" → ")} '${state.partialText}'",
+                            )
                             speechEngine?.consumeUtteranceAndRestart()
+                            applyDriveSequence(sequence)
                         }
-                    } else {
-                        val phrase = state.recognizedText
-                        if (phrase.isNotBlank()) {
-                            handleUserPhrase(phrase, state.history, state.recognizedAlternatives)
-                        }
+                    } else if (state.recognizedText.isNotBlank()) {
+                        handleUserPhrase(state.recognizedText, state.history, state.recognizedAlternatives)
                     }
                 },
             )

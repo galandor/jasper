@@ -14,7 +14,7 @@
 | UI | Jetpack Compose, Canvas |
 | Камера | CameraX (`ImageAnalysis`, 640×480) |
 | Лицо (детекция) | ML Kit Face Detection (FAST, CLASSIFICATION_MODE_ALL) |
-| Речь (STT) | Android `SpeechRecognizer`, `ru-RU` |
+| Речь (STT) | Vosk (`vosk-android` 0.3.75 + `vosk-model-small-ru-0.22`), офлайн |
 | Голос (TTS) | Android `TextToSpeech`, `ru-RU` |
 | LLM | Google Gemini REST API (`generateContent`) |
 | Асинхронность | Kotlin Coroutines |
@@ -47,7 +47,7 @@
 ### Поток диалога
 
 ```text
-STT onResults
+STT onResult / onPartialResult
   → handleUserPhrase()
     → InterruptCommands? → interruptJasper()
     → ConversationBrain.respondToPhrase()
@@ -82,7 +82,8 @@ app/src/main/kotlin/com/jasper/facemirror/
 ├── camera/
 │   └── FaceAnalyzer.kt        — ML Kit → FaceState
 ├── speech/
-│   ├── SpeechRecognizerEngine.kt  — STT, pause/resume, acknowledgePhrase
+│   ├── SpeechRecognizerEngine.kt  — Vosk STT, pause/resume, acknowledgePhrase
+│   ├── VoskModelStore.kt          — распаковка model-ru из assets
 │   ├── ConversationBrain.kt       — отменяемые LLM-запросы
 │   ├── LlmConversationResponder.kt — парсинг JSON-ответа Gemini
 │   ├── JasperLlmPrompt.kt         — английский промпт, ответы на русском
@@ -183,9 +184,9 @@ mouthOpen, amplitude     // внутренние, UI не использует
 `SpeechRecognizer` и TTS конкурируют за микрофон. На время ответа:
 
 ```kotlin
-speechEngine.pauseListening()  // cancel + paused = true
+speechEngine.pauseListening()  // setPause(true), микрофон не закрывается
 // ... TTS ...
-speechEngine.resumeListening() // paused = false + restart
+speechEngine.resumeListening() // reset + setPause(false) через 250 ms
 ```
 
 ### Barge-in
@@ -208,7 +209,7 @@ speechEngine.resumeListening() // paused = false + restart
 
 - `CAMERA` — фронтальная камера (только `ImageAnalysis`, без preview)
 - `RECORD_AUDIO` — микрофон для STT
-- `INTERNET` — Google Speech Services + Gemini API
+- `INTERNET` — Gemini API (STT офлайн)
 
 ---
 
@@ -216,7 +217,7 @@ speechEngine.resumeListening() // paused = false + restart
 
 - Анализ камеры — `Executors.newSingleThreadExecutor()`, callback на main thread
 - ML Kit callbacks — main executor
-- SpeechRecognizer — callbacks на main thread (`Handler`)
+- Vosk SpeechService — callbacks на main thread (`Handler`)
 - TTS lip pulse — main thread
 - LLM-запросы — `Dispatchers.IO`, результат на `Dispatchers.Main`
 - UI-анимации — Compose recomposition + coroutines в `LaunchedEffect`

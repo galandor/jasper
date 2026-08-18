@@ -1,4 +1,7 @@
+import java.io.File
+import java.net.URI
 import java.util.Properties
+import java.util.zip.ZipFile
 
 plugins {
     id("com.android.application")
@@ -11,6 +14,10 @@ val localProperties = Properties().apply {
     if (file.exists()) file.inputStream().use { load(it) }
 }
 
+val voskModelName = "vosk-model-small-ru-0.22"
+val voskModelUrl = "https://alphacephei.com/vosk/models/$voskModelName.zip"
+val voskAssetsDir = layout.buildDirectory.dir("generated/vosk-assets")
+
 android {
     namespace = "com.jasper.facemirror"
     compileSdk = 35
@@ -21,6 +28,9 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
         buildConfigField(
             "String",
             "GEMINI_API_KEY",
@@ -51,6 +61,14 @@ android {
         compose = true
         buildConfig = true
     }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    sourceSets.getByName("main").assets.srcDir(voskAssetsDir)
 }
 
 dependencies {
@@ -74,5 +92,51 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
+    implementation("com.alphacephei:vosk-android:0.3.75@aar")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
+
+val unpackVoskModel by tasks.registering {
+    val zipFile = layout.buildDirectory.file("downloads/$voskModelName.zip")
+    inputs.property("model", voskModelName)
+    outputs.dir(voskAssetsDir)
+    doLast {
+        val zip = zipFile.get().asFile
+        if (!zip.exists() || zip.length() < 10_000_000L) {
+            zip.parentFile.mkdirs()
+            logger.lifecycle("Downloading $voskModelName (~45MB)…")
+            zip.outputStream().use { out ->
+                URI(voskModelUrl).toURL().openStream().use { input -> input.copyTo(out) }
+            }
+        }
+        val dest = File(voskAssetsDir.get().asFile, "model-ru")
+        dest.deleteRecursively()
+        dest.mkdirs()
+        ZipFile(zip).use { archive ->
+            val prefix = "$voskModelName/"
+            archive.entries().asSequence().forEach { entry ->
+                if (!entry.name.startsWith(prefix)) return@forEach
+                val relative = entry.name.removePrefix(prefix)
+                if (relative.isEmpty()) return@forEach
+                val outFile = File(dest, relative)
+                if (entry.isDirectory) {
+                    outFile.mkdirs()
+                    return@forEach
+                }
+                outFile.parentFile.mkdirs()
+                archive.getInputStream(entry).use { input ->
+                    outFile.outputStream().use { input.copyTo(it) }
+                }
+            }
+        }
+        File(dest, "uuid").writeText(voskModelName)
+        check(File(dest, "am").isDirectory) {
+            "Vosk model unpack failed: ${dest}/am missing (zip ${zip.length()} bytes)"
+        }
+        logger.lifecycle("Vosk model ready at $dest")
+    }
+}
+
+tasks.named("preBuild").configure { dependsOn(unpackVoskModel) }
