@@ -13,6 +13,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -40,12 +42,19 @@ class ChassisDriver(
     var isDriving: Boolean = false
         private set
 
+    /** Последняя дистанция HC-SR04, см. 0 = нет эха. */
+    private val _sonarCm = MutableStateFlow<Int?>(null)
+    val sonarCm: StateFlow<Int?> = _sonarCm
+
+    var onSonarCm: ((Int) -> Unit)? = null
+
     private val mutex = Mutex()
     private val holdEpoch = AtomicInteger(0)
     private var socket: BluetoothSocket? = null
     private var holdJob: Job? = null
     private var connectJob: Job? = null
     private var queueJob: Job? = null
+    private var readJob: Job? = null
 
     fun start() {
         connectFinished = false
@@ -58,20 +67,32 @@ class ChassisDriver(
     suspend fun reconnect(): Boolean {
         connectJob?.cancel()
         connectJob = null
+        readJob?.cancel()
+        readJob = null
         connectFinished = false
         isConnected = false
         runCatching { socket?.close() }
         socket = null
+        _sonarCm.value = null
         withContext(Dispatchers.IO) {
             connectLocked()
         }
         return isConnected
     }
 
-    fun execute(action: DriveAction) {
+    fun execute(action: DriveAction, holdMs: Long = action.holdMs) {
         queueJob?.cancel()
         queueJob = null
-        executeNow(action)
+        executeNow(action, holdMs)
+    }
+
+    /** Держать моторы, пока не придёт другая команда. Джойстик и автопилот. */
+    fun holdUntilStopped(action: DriveAction) {
+        if (!action.hold) {
+            execute(action)
+            return
+        }
+        execute(action, holdMs = Long.MAX_VALUE)
     }
 
     /**
@@ -87,14 +108,14 @@ class ChassisDriver(
         queueJob?.cancel()
         queueJob = scope.launch {
             for (action in queue) {
-                executeNow(action)
+                executeNow(action, action.holdMs)
                 if (action == DriveAction.STOP) break
                 delay(if (action.hold) action.holdMs + QUEUE_GAP_MS else QUEUE_GAP_MS)
             }
         }
     }
 
-    private fun executeNow(action: DriveAction) {
+    private fun executeNow(action: DriveAction, holdMs: Long = action.holdMs) {
         if (action == DriveAction.CONNECT) {
             start()
             return
@@ -119,7 +140,8 @@ class ChassisDriver(
             holdJob = scope.launch(Dispatchers.IO) {
                 val startedAt = System.currentTimeMillis()
                 try {
-                    while (isActive && System.currentTimeMillis() - startedAt < action.holdMs) {
+                    val unlimited = holdMs == Long.MAX_VALUE
+                    while (isActive && (unlimited || System.currentTimeMillis() - startedAt < holdMs)) {
                         write(action.code)
                         delay(HOLD_INTERVAL_MS)
                     }
@@ -141,11 +163,14 @@ class ChassisDriver(
         queueJob?.cancel()
         holdJob?.cancel()
         connectJob?.cancel()
+        readJob?.cancel()
         queueJob = null
         holdJob = null
         connectJob = null
+        readJob = null
         isConnected = false
         isDriving = false
+        _sonarCm.value = null
         val toClose = socket
         socket = null
         try {
@@ -175,6 +200,7 @@ class ChassisDriver(
                 val opened = openSocket(device) ?: return
                 socket = opened
                 isConnected = true
+                startReader(opened)
                 Log.i(TAG, "Подключен к ${device.name}")
             }
         } finally {
@@ -228,10 +254,52 @@ class ChassisDriver(
         }
     }
 
+    private fun startReader(opened: BluetoothSocket) {
+        readJob?.cancel()
+        readJob = scope.launch(Dispatchers.IO) {
+            val incoming = StringBuilder()
+            val buffer = ByteArray(64)
+            try {
+                val stream = opened.inputStream
+                while (isActive) {
+                    val n = stream.read(buffer)
+                    if (n <= 0) break
+                    incoming.append(String(buffer, 0, n, Charsets.US_ASCII))
+                    var newline = incoming.indexOf("\n")
+                    while (newline >= 0) {
+                        val line = incoming.substring(0, newline).trim('\r', ' ', '\t')
+                        incoming.delete(0, newline + 1)
+                        parseSonarLine(line)
+                        newline = incoming.indexOf("\n")
+                    }
+                    if (incoming.length > 32) incoming.clear()
+                }
+            } catch (e: IOException) {
+                if (isActive) Log.w(TAG, "Чтение HC-06 оборвалось", e)
+            }
+        }
+    }
+
+    private fun parseSonarLine(line: String) {
+        if (line.isEmpty()) return
+        val payload = when {
+            line.startsWith("D:") -> line.substring(2)
+            line.startsWith("D,") -> line.substring(2)
+            else -> return
+        }
+        val cm = payload.trim().toIntOrNull() ?: return
+        val clipped = cm.coerceIn(0, 500)
+        _sonarCm.value = clipped
+        onSonarCm?.invoke(clipped)
+    }
+
     private fun closeSocketLocked() {
         isConnected = false
+        readJob?.cancel()
+        readJob = null
         runCatching { socket?.close() }
         socket = null
+        _sonarCm.value = null
     }
 
     private fun bluetoothAdapter(): BluetoothAdapter? {

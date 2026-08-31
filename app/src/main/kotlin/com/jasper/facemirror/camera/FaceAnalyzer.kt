@@ -15,6 +15,8 @@ import kotlin.math.abs
 
 class FaceAnalyzer(
     private val onFaceState: (FaceState) -> Unit,
+    private val shouldCapture: () -> Boolean = { false },
+    private val onFrame: ((android.graphics.Bitmap) -> Unit)? = null,
 ) : ImageAnalysis.Analyzer {
 
     private val detector: FaceDetector = FaceDetection.getClient(
@@ -48,6 +50,16 @@ class FaceAnalyzer(
             return
         }
         lastAnalyzeAt = now
+
+        if (onFrame != null && shouldCapture()) {
+            runCatching { imageProxy.toBitmap() }.getOrNull()?.let { bitmap ->
+                try {
+                    onFrame.invoke(bitmap)
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+        }
 
         val inputImage = InputImage.fromMediaImage(
             mediaImage,

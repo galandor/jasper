@@ -19,6 +19,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -42,6 +44,11 @@ import com.jasper.facemirror.chassis.ChassisDriver
 import com.jasper.facemirror.chassis.DriveAction
 import com.jasper.facemirror.chassis.DriveCommands
 import com.jasper.facemirror.debug.JasperTiming
+import com.jasper.facemirror.openbot.DriveSession
+import com.jasper.facemirror.openbot.GamepadButton
+import com.jasper.facemirror.openbot.GamepadHub
+import com.jasper.facemirror.openbot.LearnCommands
+import com.jasper.facemirror.openbot.LearnIntent
 import com.jasper.facemirror.model.DialogPhase
 import com.jasper.facemirror.model.FaceExpression
 import com.jasper.facemirror.model.FaceGestureReactions
@@ -98,6 +105,10 @@ fun FaceMirrorScreen() {
     val voiceSpeaker = remember { JasperVoiceSpeaker(context) }
     val conversationBrain = remember(scope) { ConversationBrain(scope) }
     val chassisDriver = remember { ChassisDriver(context, scope) }
+    val driveSession = remember { DriveSession(context, chassisDriver) }
+    val driveHud by driveSession.hud.collectAsState()
+    val padControl by GamepadHub.control.collectAsState()
+    val padConnected by GamepadHub.connected.collectAsState()
     var speechEngine by remember { mutableStateOf<SpeechRecognizerEngine?>(null) }
 
     DisposableEffect(voiceSpeaker) {
@@ -118,6 +129,10 @@ fun FaceMirrorScreen() {
             chassisDriver.start()
         }
         onDispose { chassisDriver.release() }
+    }
+
+    DisposableEffect(driveSession) {
+        onDispose { driveSession.release() }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -314,6 +329,23 @@ fun FaceMirrorScreen() {
         if (phrase.isBlank()) return
 
         val candidates = (listOf(phrase) + alternatives).distinct()
+        val learn = LearnCommands.parseAny(candidates)
+        if (learn != null) {
+            JasperTiming.event("путь", "openbot $learn")
+            speechEngine?.acknowledgePhrase()
+            val line = when (learn) {
+                LearnIntent.START_RECORD -> if (driveHud.recording) "Уже пишу!" else driveSession.toggleRecord()
+                LearnIntent.STOP_RECORD -> if (driveHud.recording) driveSession.toggleRecord() else "Я и так не пишу."
+                LearnIntent.START_AUTOPILOT -> if (driveHud.autopilot) "Уже сам еду!" else driveSession.toggleAutopilot()
+                LearnIntent.STOP_AUTOPILOT -> if (driveHud.autopilot) driveSession.toggleAutopilot() else "Я и так не сам."
+            } ?: return
+            respondWithVoice(
+                GreetingReply(line, VoiceEmotion.PLAYFUL, FaceExpression.PLAYFUL),
+                ignoreCooldown = true,
+            )
+            return
+        }
+
         val drive = resolveDrive(candidates)
         val chassisTalk = drive != null || candidates.any { DriveCommands.isChassisTalk(it) }
         Log.i("JasperChassis", "STT='$phrase' alts=$alternatives drive=$drive")
@@ -350,6 +382,7 @@ fun FaceMirrorScreen() {
         if (InterruptCommands.isStopCommand(phrase)) {
             JasperTiming.event("путь", "interrupt без LLM")
             interruptJasper()
+            driveSession.onButton(GamepadButton.EMERGENCY_STOP)
             chassisDriver.stop()
             faceExpression = FaceExpression.NEUTRAL
             return
@@ -393,6 +426,24 @@ fun FaceMirrorScreen() {
         )
     }
 
+    LaunchedEffect(padConnected) {
+        driveSession.onGamepadConnected(padConnected)
+    }
+
+    LaunchedEffect(padControl) {
+        driveSession.onGamepadControl(padControl)
+    }
+
+    LaunchedEffect(Unit) {
+        GamepadHub.buttons.collect { button ->
+            val line = driveSession.onButton(button) ?: return@collect
+            respondWithVoice(
+                GreetingReply(line, VoiceEmotion.PLAYFUL, FaceExpression.PLAYFUL),
+                ignoreCooldown = true,
+            )
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         NeonFace(
             faceState = faceState,
@@ -401,12 +452,17 @@ fun FaceMirrorScreen() {
             isSpeaking = isJasperSpeaking || dialogPhase == DialogPhase.SPEAKING,
             lipPulse = lipPulse,
         )
+        DriveHud(state = driveHud)
 
         if (allPermissionsGranted) {
-            CameraAnalyzer(onFaceState = { state ->
-                faceState = state
-                maybeReactToSmile(state)
-            })
+            CameraAnalyzer(
+                onFaceState = { state ->
+                    faceState = state
+                    maybeReactToSmile(state)
+                },
+                shouldCapture = { driveSession.wantsFrames },
+                onFrame = { bitmap -> driveSession.onFrame(bitmap) },
+            )
             SpeechListener(
                 onEngineReady = { engine ->
                     speechEngine = engine
@@ -422,6 +478,7 @@ fun FaceMirrorScreen() {
                     }
 
                     if (chassisDriver.isDriving && DriveCommands.containsStopWord(state.partialText)) {
+                        driveSession.onButton(GamepadButton.EMERGENCY_STOP)
                         chassisDriver.stop()
                         interruptJasper()
                         faceExpression = FaceExpression.NEUTRAL
@@ -475,10 +532,16 @@ private fun PermissionPrompt(onRequestPermission: () -> Unit) {
 }
 
 @Composable
-private fun CameraAnalyzer(onFaceState: (FaceState) -> Unit) {
+private fun CameraAnalyzer(
+    onFaceState: (FaceState) -> Unit,
+    shouldCapture: () -> Boolean = { false },
+    onFrame: (android.graphics.Bitmap) -> Unit = {},
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val onFaceStateRef = rememberUpdatedState(onFaceState)
+    val shouldCaptureRef = rememberUpdatedState(shouldCapture)
+    val onFrameRef = rememberUpdatedState(onFrame)
     val mainExecutor = remember { ContextCompat.getMainExecutor(context) }
     val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
 
@@ -490,15 +553,19 @@ private fun CameraAnalyzer(onFaceState: (FaceState) -> Unit) {
             cameraProvider = cameraProviderFuture.get()
 
             val imageAnalysis = ImageAnalysis.Builder()
-                .setTargetResolution(AndroidSize(320, 240))
+                .setTargetResolution(AndroidSize(640, 480))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
                 .also { analysis ->
                     analysis.setAnalyzer(
                         analyzerExecutor,
-                        FaceAnalyzer { state ->
-                            mainExecutor.execute { onFaceStateRef.value(state) }
-                        },
+                        FaceAnalyzer(
+                            onFaceState = { state ->
+                                mainExecutor.execute { onFaceStateRef.value(state) }
+                            },
+                            shouldCapture = { shouldCaptureRef.value() },
+                            onFrame = { bitmap -> onFrameRef.value(bitmap) },
+                        ),
                     )
                 }
 

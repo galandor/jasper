@@ -91,6 +91,7 @@ dependencies {
     implementation("com.google.mlkit:face-detection:16.1.7")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
 
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation("com.alphacephei:vosk-android:0.3.75@aar")

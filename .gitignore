@@ -6,6 +6,9 @@
 /build
 /app/build
 /captures
+policy/dataset/
+policy/models/
+__pycache__/
 .externalNativeBuild
 .cxx
 *.apk
