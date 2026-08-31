@@ -30,8 +30,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.keepScreenOn
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -130,6 +130,11 @@ fun FaceMirrorScreen() {
     }
 
     val allPermissionsGranted = hasCameraPermission && hasMicPermission
+    val view = LocalView.current
+    DisposableEffect(view) {
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = false }
+    }
 
     fun resetExpressionLater() {
         expressionResetJob?.cancel()
@@ -161,6 +166,30 @@ fun FaceMirrorScreen() {
             }
         }
     }
+
+    /** «Стоп» без LLM: поездка, прогулка, речь и игра. */
+    fun haltAll() {
+        JasperTiming.event("путь", "стоп — поездка, прогулка, речь и игра")
+        conversationBrain.cancelPending()
+        conversationBrain.clearSession()
+        voiceSpeaker.stop()
+        chassisDriver.stop()
+        isJasperSpeaking = false
+        lastReplyMs = 0L
+        faceExpression = FaceExpression.NEUTRAL
+        dialogPhase = DialogPhase.INTERRUPTED
+        speechEngine?.resumeListening()
+
+        scope.launch {
+            delay(400)
+            if (dialogPhase == DialogPhase.INTERRUPTED) {
+                dialogPhase = DialogPhase.LISTENING
+            }
+        }
+    }
+
+    fun heardStop(candidates: List<String>): Boolean =
+        candidates.any { DriveCommands.containsStopWord(it) }
 
     fun respondWithVoice(reply: GreetingReply, ignoreCooldown: Boolean = false) {
         val now = System.currentTimeMillis()
@@ -251,13 +280,11 @@ fun FaceMirrorScreen() {
             }
             return
         }
-        chassisDriver.execute(drive)
         if (drive == DriveAction.STOP) {
-            interruptJasper()
-            faceExpression = FaceExpression.NEUTRAL
-            dialogPhase = DialogPhase.LISTENING
+            haltAll()
             return
         }
+        chassisDriver.execute(drive)
         if (chassisDriver.connectFinished && !chassisDriver.isConnected) {
             respondWithVoice(
                 GreetingReply("Машинка не слышит!", VoiceEmotion.SAD, FaceExpression.SAD),
@@ -297,13 +324,8 @@ fun FaceMirrorScreen() {
         resetExpressionLater()
     }
 
-    fun resolveDrive(candidates: List<String>): DriveAction? {
-        var drive = DriveCommands.parseAny(candidates)
-        if (drive == null && chassisDriver.isDriving) {
-            drive = DriveCommands.parseMotionAny(candidates)
-        }
-        return drive
-    }
+    fun resolveDrive(candidates: List<String>): DriveAction? =
+        DriveCommands.parseAny(candidates)
 
     /** [gate] уже подтвердил, что фразу можно исполнять; порядок берём из разбора всей реплики. */
     fun resolveDriveSequence(candidates: List<String>, gate: DriveAction): List<DriveAction> {
@@ -315,6 +337,21 @@ fun FaceMirrorScreen() {
         if (phrase.isBlank()) return
 
         val candidates = (listOf(phrase) + alternatives).distinct()
+        if (heardStop(candidates)) {
+            speechEngine?.acknowledgePhrase()
+            haltAll()
+            return
+        }
+
+        if (InterruptCommands.isStopCommand(phrase)) {
+            JasperTiming.event("путь", "interrupt без LLM")
+            speechEngine?.acknowledgePhrase()
+            interruptJasper()
+            chassisDriver.stop()
+            faceExpression = FaceExpression.NEUTRAL
+            return
+        }
+
         val drive = resolveDrive(candidates)
         val chassisTalk = drive != null || candidates.any { DriveCommands.isChassisTalk(it) }
         Log.i("JasperChassis", "STT='$phrase' alts=$alternatives drive=$drive")
@@ -332,13 +369,6 @@ fun FaceMirrorScreen() {
             return
         }
 
-        if (chassisDriver.isDriving && candidates.any { DriveCommands.containsStopWord(it) }) {
-            JasperTiming.event("путь", "стоп по слову во время езды")
-            speechEngine?.acknowledgePhrase()
-            applyDrive(DriveAction.STOP)
-            return
-        }
-
         // Пока Jasper говорит — микрофон выключен; отбрасываем эхо, если оно просочилось
         if (isJasperSpeaking || dialogPhase == DialogPhase.SPEAKING) {
             JasperTiming.event("путь", "отброшено как эхо TTS")
@@ -347,14 +377,6 @@ fun FaceMirrorScreen() {
         }
 
         speechEngine?.acknowledgePhrase()
-
-        if (InterruptCommands.isStopCommand(phrase)) {
-            JasperTiming.event("путь", "interrupt без LLM")
-            interruptJasper()
-            chassisDriver.stop()
-            faceExpression = FaceExpression.NEUTRAL
-            return
-        }
 
         if (candidates.all { DriveCommands.isNameOnly(it) }) {
             JasperTiming.event("путь", "только имя — ждём команду, без Gemini")
@@ -393,7 +415,7 @@ fun FaceMirrorScreen() {
         )
     }
 
-    Box(modifier = Modifier.fillMaxSize().keepScreenOn()) {
+    Box(modifier = Modifier.fillMaxSize()) {
         NeonFace(
             faceState = faceState,
             expression = faceExpression,
@@ -421,12 +443,9 @@ fun FaceMirrorScreen() {
                         speechState = state
                     }
 
-                    if (chassisDriver.isDriving && DriveCommands.containsStopWord(state.partialText)) {
-                        chassisDriver.stop()
-                        interruptJasper()
-                        faceExpression = FaceExpression.NEUTRAL
-                        dialogPhase = DialogPhase.LISTENING
+                    if (heardStop(listOf(state.partialText, state.recognizedText).filter { it.isNotBlank() })) {
                         speechEngine?.consumeUtteranceAndRestart()
+                        haltAll()
                     } else if (state.recognizedText.isBlank() && state.partialText.isNotBlank()) {
                         val candidates = listOf(state.partialText)
                         val drive = resolveDrive(candidates)

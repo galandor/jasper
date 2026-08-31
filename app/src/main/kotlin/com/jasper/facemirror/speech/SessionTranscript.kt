@@ -18,6 +18,11 @@ class SessionTranscript(
     fun addJasper(text: String) = add(fromJasper = true, text)
 
     @Synchronized
+    fun clear() {
+        turns.clear()
+    }
+
+    @Synchronized
     fun snapshot(): List<ChatTurn> = turns.toList()
 
     @get:Synchronized

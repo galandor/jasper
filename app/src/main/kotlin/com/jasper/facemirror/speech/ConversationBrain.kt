@@ -15,8 +15,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Сначала классификатор команд машинки (только если фраза похожа на руление),
- * потом обычный диалог. Классификатор не должен глушить разговор:
+ * Сначала классификатор команд машинки (только если фраза с именем и похожа на руление),
+ * потом обычный диалог и игры. Классификатор не должен глушить разговор:
  * при ошибке/таймауте идём в чат.
  */
 class ConversationBrain(
@@ -27,10 +27,17 @@ class ConversationBrain(
 ) {
     private var activeJob: Job? = null
     private val session = SessionTranscript()
+    @Volatile
+    private var gameActive: Boolean = false
 
     fun cancelPending() {
         activeJob?.cancel()
         activeJob = null
+    }
+
+    fun clearSession() {
+        session.clear()
+        gameActive = false
     }
 
     fun respondToPhrase(
@@ -96,8 +103,21 @@ class ConversationBrain(
                 }
                 val chatStartedAt = JasperTiming.now()
                 val prior = session.snapshot()
+                if (transcripts.any { PlayCommands.isStart(it) }) {
+                    gameActive = true
+                    JasperTiming.event("мозг игра", "старт по «давай играть»")
+                }
+                val playing = gameActive
                 val reply = if (llm.isAvailable) {
-                    llm.respond(phrase, prior) ?: local.match(phrase)
+                    val llmReply = llm.respond(phrase, prior, gameActive = playing)
+                    when {
+                        llmReply == null -> local.match(phrase)
+                        !playing && PlayCommands.isInvite(llmReply.text) -> {
+                            JasperTiming.event("мозг игра", "приглашение отброшено: '${llmReply.text}'")
+                            local.match(phrase)
+                        }
+                        else -> llmReply
+                    }
                 } else {
                     local.match(phrase)
                 }

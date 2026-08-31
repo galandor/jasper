@@ -44,6 +44,16 @@ class SessionTranscriptTest {
         session.addJasper("")
         assertEquals(0, session.size)
     }
+
+    @Test
+    fun clearDropsTheGameTurns() {
+        val session = SessionTranscript()
+        session.addUser("давай в слова")
+        session.addJasper("Назови слово на А.")
+        session.clear()
+        assertEquals(0, session.size)
+        assertTrue(session.snapshot().isEmpty())
+    }
 }
 
 class JasperLlmPromptTest {
@@ -53,16 +63,28 @@ class JasperLlmPromptTest {
         val prompt = JasperLlmPrompt.build("привет")
         assertFalse(prompt.contains("This session so far"))
         assertTrue(prompt.contains("User said: \"привет\""))
-        assertTrue(prompt.contains("Start a game only if the user asks to play"))
-        assertTrue(prompt.contains("do not invite a new game"))
-        assertTrue(prompt.contains("Never invite a game on your own"))
-        assertTrue(prompt.contains("NOT a game turn"))
+        assertTrue(prompt.contains("Games are OFF"))
+        assertTrue(prompt.contains("Давай играть"))
+        assertTrue(prompt.contains("Car commands always start with the name"))
+        assertTrue(prompt.contains("аспер"))
+        assertFalse(prompt.contains("1) Слова"))
+        assertFalse(prompt.contains("Start a game only if the user asks to play"))
     }
 
     @Test
-    fun promptListsOnlyTheFourGames() {
-        val prompt = JasperLlmPrompt.build("давай поиграем")
+    fun chatModeDoesNotListGames() {
+        val prompt = JasperLlmPrompt.build("что умеешь")
+        assertTrue(prompt.contains("Games are OFF"))
+        assertFalse(prompt.contains("1) Слова"))
+        assertFalse(prompt.contains("2) Угадай слово"))
+        assertFalse(prompt.contains("Данетки"))
+    }
+
+    @Test
+    fun promptListsOnlyTheFourGamesWhenGameIsOn() {
+        val prompt = JasperLlmPrompt.build("давай играть", gameActive = true)
         assertTrue(prompt.contains("5-7 years old named Jasper"))
+        assertTrue(prompt.contains("A game is ON"))
         assertTrue(prompt.contains("1) Слова"))
         assertTrue(prompt.contains("2) Угадай слово"))
         assertTrue(prompt.contains("3) Загадки"))
@@ -72,18 +94,20 @@ class JasperLlmPromptTest {
         assertTrue(prompt.contains("5 attempts"))
         assertTrue(prompt.contains("сдаюсь"))
         assertTrue(prompt.contains("expression sad"))
+        assertFalse(prompt.contains("Games are OFF"))
     }
 
     @Test
     fun sessionIncludesJasperReplySoGameCanContinue() {
         val session = listOf(
-            ChatTurn(fromJasper = false, text = "давай поиграем"),
+            ChatTurn(fromJasper = false, text = "давай играть"),
             ChatTurn(fromJasper = true, text = "Давай в слова! Назови на А."),
         )
-        val prompt = JasperLlmPrompt.build("арбуз", session)
-        assertTrue(prompt.contains("User: давай поиграем"))
+        val prompt = JasperLlmPrompt.build("арбуз", session, gameActive = true)
+        assertTrue(prompt.contains("User: давай играть"))
         assertTrue(prompt.contains("Jasper: Давай в слова! Назови на А."))
         assertTrue(prompt.contains("User said: \"арбуз\""))
+        assertTrue(prompt.contains("1) Слова"))
         assertFalse(prompt.contains("Recent user lines"))
     }
 }

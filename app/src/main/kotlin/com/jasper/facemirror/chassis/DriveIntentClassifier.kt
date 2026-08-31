@@ -76,14 +76,15 @@ class DriveIntentClassifier(
         val lines = transcripts.joinToString("\n") { "- \"$it\"" }
         return """
             Voice control for a small robot car named Jasper (Джаспер).
-            STT is noisy: name often comes as джазпер, джеспер, jasper, джаспер.
+            STT is noisy: name often comes as джаспер, жаспер, аспер, джазпер, джеспер, jasper.
             Commands may be split: "на лево", "в перед", "на право".
 
-            If the user is telling the car to move or to reconnect Bluetooth, pick a command.
-            Name is optional: "едь вперед", "вперед", "налево", "поехали" are still commands.
-            If it's greeting/chat/unrelated, cmd=none.
-            If ambiguous but it looks like a move command, pick the command.
-            "подключись к машинке" / reconnect / bluetooth → connect.
+            Move/reconnect commands MUST start with the name.
+            "аспер вперед", "джаспер назад", "жаспер налево" → that command.
+            WITHOUT the name, "вперед", "назад", "налево", "поехали", "едь" are chat or a game turn — cmd=none.
+            EXCEPTION: stop (стоп, стой, остановись, тормоз) works WITHOUT the name. cmd=stop.
+            If it's greeting/chat/a game, cmd=none.
+            "джаспер подключись" / reconnect / bluetooth after the name → connect.
 
             Same utterance, alternative transcripts:
             $lines

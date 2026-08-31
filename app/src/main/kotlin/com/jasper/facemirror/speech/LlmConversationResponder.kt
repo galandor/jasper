@@ -11,10 +11,14 @@ class LlmConversationResponder(
 ) {
     val isAvailable: Boolean get() = client.isConfigured
 
-    suspend fun respond(userPhrase: String, session: List<ChatTurn> = emptyList()): GreetingReply? {
+    suspend fun respond(
+        userPhrase: String,
+        session: List<ChatTurn> = emptyList(),
+        gameActive: Boolean = false,
+    ): GreetingReply? {
         if (!isAvailable) return null
 
-        val prompt = JasperLlmPrompt.build(userPhrase, session)
+        val prompt = JasperLlmPrompt.build(userPhrase, session, gameActive)
 
         val raw = client.generate(prompt) ?: return null
         return parseResponse(raw)

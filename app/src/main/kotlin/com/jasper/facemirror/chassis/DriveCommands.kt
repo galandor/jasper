@@ -27,8 +27,8 @@ enum class DriveAction(
 }
 
 /**
- * Движение с именем в начале. STT часто ломает имя («расперь», «гаспер»)
- * и кладёт чистое «вперёд» / «налево» в alternatives.
+ * Движение только с именем в начале (джаспер / жаспер / аспер).
+ * «Стоп» — исключение: без имени, гасит и езду, и игру.
  */
 object DriveCommands {
     private val trailingFluff = Regex("""\s+(пожалуйста|давай|ну)$""")
@@ -62,6 +62,7 @@ object DriveCommands {
         if (tokens.size >= 2 && looksLikeJasper(tokens[0])) {
             return matchCommand(tokens.drop(1).joinToString(" ").replace(trailingFluff, "").trim())
         }
+        if (containsStopWord(phrase)) return DriveAction.STOP
         return null
     }
 
@@ -71,45 +72,44 @@ object DriveCommands {
         if (list.any { addressed(it) }) {
             list.firstNotNullOfOrNull { matchCommand(normalize(it)) }?.let { return it }
         }
-        // Google клал одно «вперёд» в alternatives; Vosk отдаёт всю фразу
-        // («едь вперед») без имени — короткую команду берём и так.
-        return list.firstNotNullOfOrNull { phrase ->
-            val tokens = tokenize(phrase)
-            if (tokens.size in 1..3) matchCommand(normalize(phrase)) else null
-        }
+        if (list.any { containsStopWord(it) }) return DriveAction.STOP
+        return null
     }
 
-    /** Команда без имени — только пока машинка уже едет, STT часто теряет «Джаспер». */
-    fun parseMotionAny(phrases: Iterable<String>): DriveAction? =
-        phrases.firstNotNullOfOrNull { matchCommand(normalize(it)) }
-
     /**
-     * Все команды фразы в порядке произнесения: Google склеивает подряд сказанное
-     * в одну реплику («Джаспер направо Джаспер прямо»), а [matchCommand] вернул бы
-     * только одну — ту, чьё правило стоит выше в [rules].
+     * Все команды фразы в порядке произнесения.
+     * Движение — только после имени; «стоп» можно без имени.
      */
     fun parseSequence(phrase: String): List<DriveAction> {
         val tokens = tokenize(phrase)
         val actions = mutableListOf<DriveAction>()
         var index = 0
         while (index < tokens.size) {
-            if (isAddressToken(tokens[index])) {
+            val stop = matchStopAt(tokens, index)
+            if (stop != null) {
+                if (actions.lastOrNull() != DriveAction.STOP) actions += DriveAction.STOP
+                index += stop
+                continue
+            }
+            val commandIndex = skipNameFrom(tokens, index)
+            if (commandIndex == null) {
                 index++
                 continue
             }
-            val matched = matchAt(tokens, index)
+            if (commandIndex >= tokens.size) break
+            val matched = matchAt(tokens, commandIndex)
             if (matched == null) {
-                index++
+                index = maxOf(commandIndex, index + 1)
                 continue
             }
             var (size, action) = matched
-            val strafe = strafeUpgrade(action, tokens.getOrNull(index + size))
+            val strafe = strafeUpgrade(action, tokens.getOrNull(commandIndex + size))
             if (strafe != null) {
                 action = strafe
                 size++
             }
             if (actions.lastOrNull() != action) actions += action
-            index += size
+            index = commandIndex + size
         }
         return actions
     }
@@ -143,7 +143,18 @@ object DriveCommands {
 
     private fun isAddressToken(token: String): Boolean = token == "эй" || looksLikeJasper(token)
 
-    /** Похоже на руление: кривое имя + движение, или само слово команды. */
+    private fun matchStopAt(tokens: List<String>, index: Int): Int? {
+        if (index >= tokens.size) return null
+        return if (containsStopWord(tokens[index])) 1 else null
+    }
+
+    private fun skipNameFrom(tokens: List<String>, index: Int): Int? {
+        if (index >= tokens.size) return null
+        val relative = skipName(tokens.subList(index, tokens.size)) ?: return null
+        return index + relative
+    }
+
+    /** Похоже на руление: имя + движение. Без имени это чат или игра. */
     fun isChassisTalk(phrase: String): Boolean {
         val command = commandAfterName(phrase)
         if (command != null) {
@@ -157,7 +168,7 @@ object DriveCommands {
             val rest = tokens.drop(1).joinToString(" ")
             if (matchCommand(rest) != null || motionHint.containsMatchIn(rest)) return true
         }
-        return matchCommand(normalize(phrase)) != null
+        return false
     }
 
     /** Только имя («Джаспер», «эй джазпер») — ждём команду, без Gemini. */
@@ -245,10 +256,12 @@ object DriveCommands {
 
     private const val MAX_COMMAND_TOKENS = 3
 
-    private val NAME_ALIASES = listOf("джаспер", "джазпер", "джеспер", "jasper")
+    private val NAME_ALIASES = listOf(
+        "джаспер", "жаспер", "аспер", "джазпер", "джеспер", "jasper",
+    )
 
     private val NAME_PREFIXES = listOf(
         "джас", "джаз", "джес", "джез", "jasp",
-        "жас", "жаз", "гас", "газ", "расп", "rasp", "спер", "ясп",
+        "жас", "жаз", "асп", "гас", "газ", "расп", "rasp", "спер", "ясп",
     )
 }

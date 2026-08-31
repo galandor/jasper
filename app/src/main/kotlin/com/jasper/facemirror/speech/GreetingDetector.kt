@@ -15,6 +15,13 @@ object GreetingDetector {
 
     private val triggers = listOf(
         Trigger(
+            pattern = Regex("""давай\s+играть""", RegexOption.IGNORE_CASE),
+            replies = listOf(
+                GreetingReply("Во что сыграем?", VoiceEmotion.PLAYFUL, FaceExpression.PLAYFUL),
+                GreetingReply("Слова, загадки или данетки?", VoiceEmotion.PLAYFUL, FaceExpression.PLAYFUL),
+            ),
+        ),
+        Trigger(
             pattern = Regex("""боюсь|страшно|испугал|жуть""", RegexOption.IGNORE_CASE),
             replies = listOf(
                 GreetingReply("Ой-ой!", VoiceEmotion.AFRAID, FaceExpression.AFRAID),
