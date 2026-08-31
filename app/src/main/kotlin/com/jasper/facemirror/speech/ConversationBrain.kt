@@ -26,6 +26,7 @@ class ConversationBrain(
     private val driveClassifier: DriveIntentClassifier = DriveIntentClassifier(),
 ) {
     private var activeJob: Job? = null
+    private val session = SessionTranscript()
 
     fun cancelPending() {
         activeJob?.cancel()
@@ -34,7 +35,6 @@ class ConversationBrain(
 
     fun respondToPhrase(
         phrase: String,
-        history: List<String> = emptyList(),
         alternatives: List<String> = emptyList(),
         classifyDrive: Boolean = true,
         onDrive: (DriveAction) -> Unit = {},
@@ -49,7 +49,8 @@ class ConversationBrain(
                 JasperTiming.event(
                     "мозг старт",
                     "phrase='$phrase' alts=$alternatives llm=${llm.isAvailable} " +
-                        "classifier=${driveClassifier.isAvailable} classifyDrive=$classifyDrive",
+                        "classifier=${driveClassifier.isAvailable} classifyDrive=$classifyDrive " +
+                        "session=${session.size}",
                 )
                 if (classifyDrive && driveClassifier.isAvailable) {
                     val classifyStartedAt = JasperTiming.now()
@@ -83,8 +84,9 @@ class ConversationBrain(
                     JasperTiming.event("мозг классификатор", "пропущен — не похоже на руление")
                 }
                 val chatStartedAt = JasperTiming.now()
+                val prior = session.snapshot()
                 val reply = if (llm.isAvailable) {
-                    llm.respond(phrase, history) ?: local.match(phrase)
+                    llm.respond(phrase, prior) ?: local.match(phrase)
                 } else {
                     local.match(phrase)
                 }
@@ -100,7 +102,14 @@ class ConversationBrain(
                 )
                 if (isActive) {
                     withContext(Dispatchers.Main) {
+                        if (!isActive) return@withContext
                         if (reply != null) {
+                            session.addUser(phrase)
+                            session.addJasper(reply.text)
+                            JasperTiming.event(
+                                "мозг сессия",
+                                "ходов=${session.size} jasper='${reply.text}'",
+                            )
                             onReply(reply)
                         } else {
                             onNoReply()

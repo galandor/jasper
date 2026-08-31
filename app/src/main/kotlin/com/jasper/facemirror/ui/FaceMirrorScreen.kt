@@ -310,7 +310,7 @@ fun FaceMirrorScreen() {
         return if (sequence.size > 1) sequence else listOf(gate)
     }
 
-    fun handleUserPhrase(phrase: String, history: List<String>, alternatives: List<String> = emptyList()) {
+    fun handleUserPhrase(phrase: String, alternatives: List<String> = emptyList()) {
         if (phrase.isBlank()) return
 
         val candidates = (listOf(phrase) + alternatives).distinct()
@@ -374,7 +374,6 @@ fun FaceMirrorScreen() {
         dialogPhase = DialogPhase.THINKING
         conversationBrain.respondToPhrase(
             phrase = phrase,
-            history = history,
             alternatives = alternatives,
             classifyDrive = chassisTalk,
             onDrive = { action ->
@@ -440,7 +439,7 @@ fun FaceMirrorScreen() {
                             applyDriveSequence(sequence)
                         }
                     } else if (state.recognizedText.isNotBlank()) {
-                        handleUserPhrase(state.recognizedText, state.history, state.recognizedAlternatives)
+                        handleUserPhrase(state.recognizedText, state.recognizedAlternatives)
                     }
                 },
             )

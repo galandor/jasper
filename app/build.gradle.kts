@@ -96,6 +96,7 @@ dependencies {
     implementation("com.alphacephei:vosk-android:0.3.75@aar")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
 }
 
 val unpackVoskModel by tasks.registering {
