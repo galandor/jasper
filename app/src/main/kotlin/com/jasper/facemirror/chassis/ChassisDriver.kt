@@ -23,6 +23,9 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Bluetooth Classic SPP → HC-06. Протокол машинки: `%A#`, `%S#`, …
  * Импульсные команды A–F повторяются, пока не придёт стоп.
+ *
+ * После коннекта шлём `%P#`: Arduino отдаёт моторы телефону и не спорит
+ * ультразвуком. При закрытии — `%S#%O#`, снова старая прошивка машинки.
  */
 class ChassisDriver(
     private val context: Context,
@@ -46,6 +49,7 @@ class ChassisDriver(
     private var holdJob: Job? = null
     private var connectJob: Job? = null
     private var queueJob: Job? = null
+    private var phoneModeJob: Job? = null
 
     fun start() {
         connectFinished = false
@@ -58,6 +62,7 @@ class ChassisDriver(
     suspend fun reconnect(): Boolean {
         connectJob?.cancel()
         connectJob = null
+        stopPhoneKeepalive()
         connectFinished = false
         isConnected = false
         runCatching { socket?.close() }
@@ -138,6 +143,7 @@ class ChassisDriver(
     }
 
     fun release() {
+        stopPhoneKeepalive()
         queueJob?.cancel()
         holdJob?.cancel()
         connectJob?.cancel()
@@ -149,7 +155,7 @@ class ChassisDriver(
         val toClose = socket
         socket = null
         try {
-            toClose?.outputStream?.write("%S#".toByteArray(Charsets.US_ASCII))
+            toClose?.outputStream?.write("%S#%O#".toByteArray(Charsets.US_ASCII))
             toClose?.outputStream?.flush()
         } catch (_: Exception) {
             // Сокет уже закрыт или ещё не открыт
@@ -159,6 +165,7 @@ class ChassisDriver(
 
     @SuppressLint("MissingPermission")
     private suspend fun connectLocked() {
+        var linked = false
         try {
             mutex.withLock {
                 closeSocketLocked()
@@ -175,8 +182,10 @@ class ChassisDriver(
                 val opened = openSocket(device) ?: return
                 socket = opened
                 isConnected = true
+                linked = true
                 Log.i(TAG, "Подключен к ${device.name}")
             }
+            if (linked) startPhoneKeepalive()
         } finally {
             connectFinished = true
         }
@@ -228,7 +237,26 @@ class ChassisDriver(
         }
     }
 
+    private fun startPhoneKeepalive() {
+        stopPhoneKeepalive()
+        phoneModeJob = scope.launch(Dispatchers.IO) {
+            write('P')
+            Log.i(TAG, "шасси: режим телефона")
+            while (isActive) {
+                delay(PHONE_KEEPALIVE_MS)
+                if (!isConnected) break
+                write('P')
+            }
+        }
+    }
+
+    private fun stopPhoneKeepalive() {
+        phoneModeJob?.cancel()
+        phoneModeJob = null
+    }
+
     private fun closeSocketLocked() {
+        stopPhoneKeepalive()
         isConnected = false
         runCatching { socket?.close() }
         socket = null
@@ -243,6 +271,7 @@ class ChassisDriver(
         private const val TAG = "JasperChassis"
         private const val HOLD_INTERVAL_MS = 200L
         private const val QUEUE_GAP_MS = 250L
+        private const val PHONE_KEEPALIVE_MS = 4000L
         private const val MAX_QUEUE_SIZE = 4
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private val CHASSIS_NAME_HINTS = listOf("HC-06", "HC-05", "HC-08", "linvor", "BT04", "MLN")
