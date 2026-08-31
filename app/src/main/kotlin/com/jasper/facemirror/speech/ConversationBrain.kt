@@ -80,6 +80,17 @@ class ConversationBrain(
                         }
                         return@launch
                     }
+                    if (isShortUtterance(phrase)) {
+                        JasperTiming.elapsed(
+                            "мозг итог",
+                            brainStartedAt,
+                            "путь=тишина (похоже на руление, не чат/игра)",
+                        )
+                        if (isActive) {
+                            withContext(Dispatchers.Main) { onNoReply() }
+                        }
+                        return@launch
+                    }
                 } else if (!classifyDrive) {
                     JasperTiming.event("мозг классификатор", "пропущен — не похоже на руление")
                 }
@@ -132,5 +143,11 @@ class ConversationBrain(
     companion object {
         private const val TAG = "JasperChassis"
         private const val CLASSIFY_TIMEOUT_MS = 6_000L
+
+        /** Короткая команда шасси, не предложение поиграть. */
+        internal fun isShortUtterance(phrase: String): Boolean {
+            val tokens = phrase.trim().split(Regex("""\s+""")).filter { it.isNotEmpty() }
+            return tokens.size in 1..4
+        }
     }
 }

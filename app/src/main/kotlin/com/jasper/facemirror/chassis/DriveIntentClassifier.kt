@@ -79,9 +79,10 @@ class DriveIntentClassifier(
             STT is noisy: name often comes as джазпер, джеспер, jasper, джаспер.
             Commands may be split: "на лево", "в перед", "на право".
 
-            If the user is ADDRESSING Jasper and telling the car to move or to reconnect Bluetooth, pick a command.
-            If it's greeting/chat/unrelated, or Jasper is not being addressed, cmd=none.
-            If ambiguous but it looks like a named move command, pick the command.
+            If the user is telling the car to move or to reconnect Bluetooth, pick a command.
+            Name is optional: "едь вперед", "вперед", "налево", "поехали" are still commands.
+            If it's greeting/chat/unrelated, cmd=none.
+            If ambiguous but it looks like a move command, pick the command.
             "подключись к машинке" / reconnect / bluetooth → connect.
 
             Same utterance, alternative transcripts:

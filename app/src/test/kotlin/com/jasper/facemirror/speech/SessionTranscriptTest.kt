@@ -53,7 +53,10 @@ class JasperLlmPromptTest {
         val prompt = JasperLlmPrompt.build("привет")
         assertFalse(prompt.contains("This session so far"))
         assertTrue(prompt.contains("User said: \"привет\""))
+        assertTrue(prompt.contains("Start a game only if the user asks to play"))
         assertTrue(prompt.contains("do not invite a new game"))
+        assertTrue(prompt.contains("Never invite a game on your own"))
+        assertTrue(prompt.contains("NOT a game turn"))
     }
 
     @Test

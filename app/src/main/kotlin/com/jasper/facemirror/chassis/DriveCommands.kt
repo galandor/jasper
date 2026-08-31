@@ -36,7 +36,7 @@ object DriveCommands {
     private val motorStopWord = Regex("""(^|\s)(стоп|стой|остановись|тормоз)(\s|$)""")
 
     private val motionHint = Regex(
-        """лев|прав|перед|прям|еха|езж|зад|стоп|стой|тормоз|бок|гуля|след|пойд|повор|крут|развер|подключ|соедини|машин|блютуз""",
+        """лев|прав|перед|прям|еха|езж|едь|едем|еди|иди|зад|стоп|стой|тормоз|бок|гуля|след|пойд|повор|крут|развер|подключ|соедини|машин|блютуз""",
     )
 
     /** «боком» произносят и до направления, и после: «налево боком». */
@@ -52,7 +52,7 @@ object DriveCommands {
         Regex("""(боком\s+(на\s*)?прав|в\s*прав\w*\s+боком)""") to DriveAction.STRAFE_RIGHT,
         Regex("""(на\s*лев[аоеы]?|в\s*лев[аоеы]?|слева|левее|левей|(^|\s)лево(\s|$)|поверн\w*\s*(на\s*)?лев)""") to DriveAction.ROTATE_LEFT,
         Regex("""(на\s*прав[аоеы]?|в\s*прав[аоеы]?|справа|правее|правей|(^|\s)право(\s|$)|поверн\w*\s*(на\s*)?прав)""") to DriveAction.ROTATE_RIGHT,
-        Regex("""(поехали|вперед|в\s*перед|прямо|езжай|поезжай)""") to DriveAction.FORWARD,
+        Regex("""(поехали|поехал|вперед|в\s*перед|прямо|езжай|поезжай|едь|едем)""") to DriveAction.FORWARD,
     )
 
     fun parse(phrase: String): DriveAction? {
@@ -71,10 +71,11 @@ object DriveCommands {
         if (list.any { addressed(it) }) {
             list.firstNotNullOfOrNull { matchCommand(normalize(it)) }?.let { return it }
         }
-        // STT часто отрывает имя: alts = [вперёд] / [налево]
+        // Google клал одно «вперёд» в alternatives; Vosk отдаёт всю фразу
+        // («едь вперед») без имени — короткую команду берём и так.
         return list.firstNotNullOfOrNull { phrase ->
             val tokens = tokenize(phrase)
-            if (tokens.size == 1) matchCommand(tokens[0]) else null
+            if (tokens.size in 1..3) matchCommand(normalize(phrase)) else null
         }
     }
 
@@ -242,7 +243,7 @@ object DriveCommands {
         return previous[right.length]
     }
 
-    private const val MAX_COMMAND_TOKENS = 2
+    private const val MAX_COMMAND_TOKENS = 3
 
     private val NAME_ALIASES = listOf("джаспер", "джазпер", "джеспер", "jasper")
 
