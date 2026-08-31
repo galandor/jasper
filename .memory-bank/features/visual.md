@@ -2,9 +2,25 @@
 
 ## Обзор
 
-Визуальный модуль — неоновое «лицо» на чёрном фоне: глаза, брови, рот. Без контура лица, щёк, носа. Отрисовка на Jetpack Compose `Canvas`.
+Визуальный модуль — неоновое «лицо» на чёрном фоне: крупные **блочные** глаза, брови, рот. Без контура лица, щёк, носа. Отрисовка на Jetpack Compose `Canvas`.
 
 Эмоции задаёт **LLM** (`FaceExpression`), а не зеркалирование с камеры. Камера используется для взгляда, моргания пользователя и детекции улыбки (реакция Jasper).
+
+```mermaid
+flowchart TB
+    subgraph Screen["чёрный экран · landscape"]
+        Brows["брови"]
+        Eyes["блочные глаза"]
+        Mouth["рот"]
+        Brows --> Eyes --> Mouth
+    end
+    Cam["CameraX + ML Kit"] -->|"yaw / pitch"| Eyes
+    Cam -->|"улыбка"| React["радостная фраза"]
+    Llm["эмоция от LLM"] --> Brows
+    Llm --> Eyes
+    Llm --> Mouth
+    Tts["lipPulse TTS"] --> Mouth
+```
 
 ---
 
@@ -13,12 +29,15 @@
 | Элемент | Цвет | HEX |
 |---------|------|-----|
 | Фон | Чёрный | `#000000` |
-| Глаза | Cyan неон | `#00F0FF` |
+| Рамка глаза | Светлая | `#E3F2FD` |
+| Блок-зрачок | Синий | `#1565FF` |
+| Блик зрачка | Голубой | `#64B5FF` |
+| Циан (брови / неон) | Cyan | `#00F0FF` |
 | Рот (обычный) | Pink неон | `#FF2DAA` |
-| Рот (радость) | Yellow неон | `#FFFFEA00` |
+| Рот (радость) | Yellow неон | `#FFEA00` |
 | Акценты | Purple / Orange | `#B388FF` / `#FF5722` |
 
-Эффект неона — несколько слоёв stroke с разной прозрачностью + тонкая белая «горячая» линия.
+Эффект неона — несколько слоёв stroke с разной прозрачностью + тонкая «горячая» линия. Глаза специально крупные и прямоугольные, чтобы читались с расстояния.
 
 ---
 
@@ -26,7 +45,7 @@
 
 - Экран в **landscape** (`AndroidManifest.xml`)
 - Масштаб от высоты экрана
-- Камера невидима (только `ImageAnalysis`, без preview)
+- Камера невидима (только `ImageAnalysis` 320×240, без preview)
 
 ---
 
@@ -77,13 +96,25 @@ lipPulse: Float            // от TTS onRangeStart
 
 ### Глаза
 
-- Форма: эллипс (неоновый контур)
-- Зрачок: заполненный круг с бликами
+Форма — не овал, а **блок**: `drawBlockEye`.
+
+- Рамка: прямоугольник со светлым stroke
+- Зрачок: синий прямоугольник внутри, ездит по yaw/pitch
+- Эмоция сужает рамку асимметрично (`blockEyeSquish`): злость — внутренний край, грусть — внешний
+- При почти закрытом глазе (`squish < 0.18`) рисуется узкая щель
 - Моргание пользователя: `faceState.leftEyeOpen` / `rightEyeOpen` с камеры
 - Idle-моргание Jasper: независимо, кроме `SLEEPY`
-- Взгляд: `yaw`, `pitch` → смещение зрачков + saccades + idle drift
 - При `DialogPhase.THINKING` — взгляд чуть вверх
 - При `DialogPhase.LISTENING` — брови приподняты
+
+```mermaid
+flowchart LR
+    Expr["FaceExpression"] --> Squish["blockEyeSquish"]
+    Open["eyeOpen + blink"] --> Frame["рамка"]
+    Squish --> Frame
+    Yaw["yaw / pitch + saccade"] --> Pupil["синий блок"]
+    Frame --> Pupil
+```
 
 ### Брови
 
@@ -120,9 +151,9 @@ ML Kit Face Detection (FAST, CLASSIFICATION_MODE_ALL):
 
 `ui/FaceMirrorScreen.kt`
 
-- Оркестрация: камера + речь + диалог + эмоции
+- Оркестрация: камера + речь + диалог + эмоции + шасси
 - `maybeReactToSmile()` — улыбка >= 0.52, 6 кадров, cooldown 10 с
-- `handleUserPhrase()` — STT → LLM / стоп-команды
+- `handleUserPhrase()` — STT → шасси / стоп / LLM
 - `respondWithVoice()` — TTS + смена `faceExpression`
 - `resetExpressionLater()` — возврат к NEUTRAL через 5 с
 
@@ -130,16 +161,19 @@ ML Kit Face Detection (FAST, CLASSIFICATION_MODE_ALL):
 
 ## Слои на экране
 
-```text
-┌─────────────────────────────────────┐
-│  NeonFace (Canvas, чёрный фон)      │
-│    ◉ глаза  ‿ брови  ⌢ рот         │
-│                                     │
-│  (текстовый overlay убран)          │
-└─────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Canvas["NeonFace Canvas"]
+        direction TB
+        B["брови"]
+        E["блочные глаза"]
+        M["рот"]
+        B --> E --> M
+    end
+    Perm["нет разрешений → кнопка внизу"]
 ```
 
-При отсутствии разрешений — кнопка «Разрешить доступ» внизу.
+Текстовый overlay убран. При отсутствии разрешений — кнопка «Разрешить доступ» внизу.
 
 ---
 
@@ -152,6 +186,18 @@ ML Kit Face Detection (FAST, CLASSIFICATION_MODE_ALL):
 | THINKING | Взгляд вверх, брови приподняты |
 | SPEAKING | Lip sync, эмоция от LLM |
 | INTERRUPTED | Краткий сброс, затем LISTENING |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Listening: камера и микрофон
+    Listening --> Thinking: фраза в LLM
+    Thinking --> Speaking: ответ
+    Speaking --> Listening: TTS конец
+    Speaking --> Interrupted: стоп
+    Thinking --> Interrupted: стоп
+    Interrupted --> Listening
+```
 
 ---
 

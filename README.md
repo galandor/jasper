@@ -220,6 +220,7 @@ arduino/            — прошивка шасси (PHONE / LEGACY)
 | `.memory-bank/roadmap.md` | План развития |
 | `.memory-bank/features/visual.md` | Визуальный модуль |
 | `.memory-bank/features/voice.md` | Голосовой модуль |
+| `.memory-bank/features/chassis.md` | Bluetooth-шасси и прошивка |
 | `arduino/README.md` | Протокол и прошивка шасси |
 
 ## Ветки
